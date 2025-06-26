@@ -153,11 +153,15 @@ particle_stress= wp.zeros(shape=nPoints,dtype=wp.mat33)  # particle elastic defo
 
 # simulation parameters
 dt = 1e-4 #time step in seconds 
+dtxpbd=1e-2 #time step for xpbd in seconds
+mpmStepsPerXpbdStep = int(dtxpbd/dt) #number of mpm steps per xpbd step
 nSteps = 1 #number of simulation steps
 
-
+t=0
+counter=0
 for step in range(nSteps):
-    
+    print(f'MPM step {step+1}/{nSteps}, time: {t:.4f}s, counter: {counter}')
+
     # perform the mpm simulation step
 
     # zero the grids
@@ -183,8 +187,17 @@ for step in range(nSteps):
               outputs=[particle_stress], 
               device=device)
 
-    # perform particle to grid transfer
+    # perform particle to grid transfer - special consideration for material type 2 
 
     # compute grid updates including external forces and grid-based boundary conditions
 
     # perform grid to particle transfer
+
+    # perform the xpbd step if timestep has reached the threshold
+    if np.mod(counter, mpmStepsPerXpbdStep) == 0 and counter>0:
+        # perform xpbd step
+        print('Performing XPBD step')
+        # in xpbd, the mpm points are treated as particles. The material 1 points are static, and the material 2 points are in motion. Deltas are calculated and applied for the material 2 points in relation to contact with all points.   
+    
+    t=t+dt
+    counter=counter+1

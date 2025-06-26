@@ -1,0 +1,5 @@
+utils/__pycache__/*
+exampleDomains/__pycache__/*
+__pycache__/
+*.py[cod]
+*$py.class
