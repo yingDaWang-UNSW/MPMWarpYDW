@@ -82,7 +82,7 @@ arch_coords_3d=arch_coords_3d[:,[2,1,0]]
 particle_volume = np.full((arch_coords_3d.shape[0],), spacing**3)
 
 # --- Save to HDF5 ---
-h5_filename = "./warp_mpm/annular_arch_particles.h5"
+h5_filename = "./annular_arch_particles.h5"
 with h5py.File(h5_filename, "w") as h5file:
     h5file.create_dataset("x", data=arch_coords_3d.T)
     h5file.create_dataset("particle_volume", data=particle_volume)
@@ -91,6 +91,6 @@ print(f"Saved HDF5: {h5_filename} with {arch_coords_3d.shape[0]} particles")
 # --- Save to VTP for ParaView ---
 cloud = pv.PolyData(arch_coords_3d)
 cloud["volume"] = particle_volume
-vtp_filename = "./warp_mpm/annular_arch_particles.vtp"
+vtp_filename = "./annular_arch_particles.vtp"
 cloud.save(vtp_filename)
 print(f"Saved VTP: {vtp_filename}")
