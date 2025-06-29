@@ -111,3 +111,190 @@ def plot_3d_box_and_particles(center, half_edges, particles):
 
     # Show the plot
     plt.show()
+import h5py
+import numpy as np
+from lxml import etree
+import os
+
+def save_particles_and_grid_to_h5_xdmf(
+    filename_prefix,
+    particle_positions,        # shape (N, 3), float32
+    particle_field,            # shape (N,), float32 or (N,3)
+    particle_field_name,
+    grid_field,                # shape (nx,ny,nz) or (nx,ny,nz,3), float32
+    grid_origin,               # (x0, y0, z0)
+    grid_spacing               # dx
+):
+    # Ensure output directory exists
+    os.makedirs(os.path.dirname(filename_prefix), exist_ok=True)
+
+    h5_filename = f"{filename_prefix}.h5"
+    xdmf_filename = f"{filename_prefix}.xdmf"
+
+    with h5py.File(h5_filename, "w") as h5f:
+        # Particle data
+        h5f.create_dataset("Particle/Position", data=particle_positions.astype(np.float32))
+        h5f.create_dataset(f"Particle/{particle_field_name}", data=particle_field.astype(np.float32))
+
+        # Grid data
+        h5f.create_dataset("Grid/Data", data=grid_field.astype(np.float32))
+
+    # XDMF
+    root = etree.Element("Xdmf", Version="3.0")
+    domain = etree.SubElement(root, "Domain")
+
+    ######################
+    # Particle Grid Block
+    ######################
+    grid_particles = etree.SubElement(domain, "Grid", Name="Particles", GridType="Uniform")
+
+    geometry = etree.SubElement(grid_particles, "Geometry", GeometryType="XYZ")
+    data_item = etree.SubElement(geometry, "DataItem",
+                                  Dimensions=f"{len(particle_positions)} 3",
+                                  NumberType="Float",
+                                  Precision="4",
+                                  Format="HDF")
+    data_item.text = f"{os.path.basename(h5_filename)}:/Particle/Position"
+
+    topology = etree.SubElement(grid_particles, "Topology", TopologyType="Polyvertex", NumberOfElements=str(len(particle_positions)))
+
+    # Particle field
+    attr = etree.SubElement(grid_particles, "Attribute", Name=particle_field_name,
+                            AttributeType="Scalar" if particle_field.ndim == 1 else "Vector", Center="Node")
+    data_item = etree.SubElement(attr, "DataItem",
+                                  Dimensions=f"{len(particle_positions)} {1 if particle_field.ndim == 1 else 3}",
+                                  NumberType="Float",
+                                  Precision="4",
+                                  Format="HDF")
+    data_item.text = f"{os.path.basename(h5_filename)}:/Particle/{particle_field_name}"
+
+    ######################
+    # Grid Block
+    ######################
+    grid_shape = grid_field.shape[:3]
+    grid_ncomp = grid_field.shape[3] if grid_field.ndim == 4 else 1
+
+    grid_struct = etree.SubElement(domain, "Grid", Name="Grid", GridType="Uniform")
+
+    topology = etree.SubElement(grid_struct, "Topology", TopologyType="3DRectMesh",
+                                 Dimensions=f"{grid_shape[2]} {grid_shape[1]} {grid_shape[0]}")  # ZYX ordering
+
+    geometry = etree.SubElement(grid_struct, "Geometry", GeometryType="ORIGIN_DXDYDZ")
+    origin_elem = etree.SubElement(geometry, "DataItem", Dimensions="3", NumberType="Float", Format="XML")
+    origin_elem.text = f"{grid_origin[0]} {grid_origin[1]} {grid_origin[2]}"
+    spacing_elem = etree.SubElement(geometry, "DataItem", Dimensions="3", NumberType="Float", Format="XML")
+    spacing_elem.text = f"{grid_spacing} {grid_spacing} {grid_spacing}"
+
+    attr = etree.SubElement(grid_struct, "Attribute", Name="grid_field",
+                            AttributeType="Scalar" if grid_ncomp == 1 else "Vector", Center="Cell")
+    data_item = etree.SubElement(attr, "DataItem",
+                                  Dimensions=f"{grid_shape[2]} {grid_shape[1]} {grid_shape[0]} {grid_ncomp}",
+                                  NumberType="Float",
+                                  Precision="4",
+                                  Format="HDF")
+    data_item.text = f"{os.path.basename(h5_filename)}:/Grid/Data"
+
+    # Write XDMF
+    with open(xdmf_filename, "wb") as f:
+        f.write(etree.tostring(root, pretty_print=True))
+
+
+def check_grid_particle_alignment(grid, dx, minBounds, particle_positions, threshold=1e-8):
+    """
+    grid: ndarray of shape (nx, ny, nz) or (nx, ny, nz, 3)
+    dx: grid spacing (scalar)
+    minBounds: (3,) array-like, origin of the grid
+    particle_positions: (N, 3) ndarray of particle positions
+    threshold: minimum value to consider a grid cell "non-zero"
+    """
+
+    grid = np.asarray(grid)
+    particle_positions = np.asarray(particle_positions)
+    minBounds = np.asarray(minBounds)
+
+    if grid.ndim == 4:
+        grid_mag = np.linalg.norm(grid, axis=-1)
+    else:
+        grid_mag = grid
+
+    nonzero_idx = np.argwhere(grid_mag > threshold)
+    nonzero_world = nonzero_idx * dx + minBounds  # convert to world coordinates
+
+    # Convert particle positions to grid indices
+    particle_grid_idx = np.floor((particle_positions - minBounds) / dx).astype(int)
+
+    # Unique grid cells touched by particles
+    particle_cells = set(map(tuple, particle_grid_idx))
+
+    # Unique non-zero grid indices
+    grid_cells = set(map(tuple, nonzero_idx))
+
+    # Intersection
+    matched = grid_cells & particle_cells
+    missed = grid_cells - particle_cells
+    excess = particle_cells - grid_cells
+
+    print(f"Non-zero grid cells: {len(grid_cells)}")
+    print(f"Matched particle grid cells: {len(matched)}")
+    print(f"Grid cells with values but no nearby particles: {len(missed)}")
+    print(f"Particle locations with no corresponding grid activity: {len(excess)}")
+
+    # return {
+    #     "matched_cells": matched,
+    #     "missed_cells": missed,
+    #     "excess_particle_cells": excess,
+    # }
+import numpy as np
+import vtk
+from vtk.util import numpy_support
+import os
+
+def save_grid_and_particles_vti_vtp(
+    output_prefix,
+    grid_mass,           # shape (nx, ny, nz)
+    minBounds,           # (x0, y0, z0)
+    dx,                  # scalar spacing
+    particle_positions,  # shape (N, 3)
+    particle_radius=0.5  # optional radius field or scalar
+):
+    os.makedirs(os.path.dirname(output_prefix), exist_ok=True)
+
+    ### Save grid as .vti
+    nx, ny, nz = grid_mass.shape
+    grid = vtk.vtkImageData()
+    grid.SetDimensions(nx, ny, nz)
+    grid.SetSpacing(dx, dx, dx)
+    grid.SetOrigin(*minBounds)
+
+    mass_flat = grid_mass.ravel(order='F')  # VTK expects Fortran order
+    mass_vtk = numpy_support.numpy_to_vtk(mass_flat.astype(np.float32))
+    mass_vtk.SetName("grid_mass")
+
+    grid.GetPointData().SetScalars(mass_vtk)
+
+    writer_vti = vtk.vtkXMLImageDataWriter()
+    writer_vti.SetFileName(f"{output_prefix}_grid.vti")
+    writer_vti.SetInputData(grid)
+    writer_vti.Write()
+
+    ### Save particles as .vtp
+    points = vtk.vtkPoints()
+    positions = particle_positions.astype(np.float32)
+    for pos in positions:
+        points.InsertNextPoint(pos.tolist())
+
+    polydata = vtk.vtkPolyData()
+    polydata.SetPoints(points)
+
+    # Optional: add radius or other scalar fields
+    radius_array = np.full((positions.shape[0],), particle_radius, dtype=np.float32)
+    vtk_radius = numpy_support.numpy_to_vtk(radius_array)
+    vtk_radius.SetName("radius")
+    polydata.GetPointData().AddArray(vtk_radius)
+
+    writer_vtp = vtk.vtkXMLPolyDataWriter()
+    writer_vtp.SetFileName(f"{output_prefix}_particles.vtp")
+    writer_vtp.SetInputData(polydata)
+    writer_vtp.Write()
+
+    print(f"Exported: {output_prefix}_grid.vti and {output_prefix}_particles.vtp")

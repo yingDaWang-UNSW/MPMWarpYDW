@@ -25,6 +25,7 @@ def compute_mu_lam_bulk_from_E_nu(
 
 @wp.kernel
 def compute_stress_from_F_trial(
+    activeLabel: wp.array(dtype=wp.int32),
     materialLabel: wp.array(dtype=wp.int32),
     particle_F: wp.array(dtype=wp.mat33),
     particle_F_trial: wp.array(dtype=wp.mat33),
@@ -37,8 +38,8 @@ def compute_stress_from_F_trial(
     particle_stress: wp.array(dtype=wp.mat33), 
 ):
     p = wp.tid()
-    # apply return mapping on mpm particles
-    if materialLabel[p] == 1:
+    # apply return mapping on mpm active particles
+    if materialLabel[p] == 1 and activeLabel[p] == 1:
         particle_F[p] = von_mises_return_mapping_with_damage_YDW(
             particle_F_trial[p], 
             materialLabel,
@@ -158,3 +159,98 @@ def kirchoff_stress_drucker_prager(
 
     center = wp.mat33(center00, 0.0, 0.0, 0.0, center11, 0.0, 0.0, 0.0, center22)
     return U * center * wp.transpose(V) * wp.transpose(F)
+
+
+@wp.func
+def compute_dweight(
+    inv_dx: float, w: wp.mat33, dw: wp.mat33, i: int, j: int, k: int
+):
+    dweight = wp.vec3(
+        dw[0, i] * w[1, j] * w[2, k],
+        w[0, i] * dw[1, j] * w[2, k],
+        w[0, i] * w[1, j] * dw[2, k],
+    )
+    return dweight * inv_dx
+
+@wp.kernel
+def p2g_apic_with_stress(
+    activeLabel: wp.array(dtype=wp.int32),
+    materialLabel: wp.array(dtype=wp.int32),
+    particle_stress: wp.array(dtype=wp.mat33),
+    particle_x: wp.array(dtype=wp.vec3),
+    particle_v: wp.array(dtype=wp.vec3),
+    particle_C: wp.array(dtype=wp.mat33),
+    particle_vol: wp.array(dtype=float),
+    particle_mass: wp.array(dtype=float),
+    dx: float,
+    inv_dx: float,
+    minBounds: wp.vec3,
+    rpic_damping: float,
+    grid_m: wp.array(dtype=float, ndim=3),
+    grid_v_in: wp.array(dtype=wp.vec3, ndim=3),
+    dt: float):
+    # input given to p2g:   particle_stress
+    #                       particle_x
+    #                       particle_v
+    #                       particle_C
+    p = wp.tid()
+    if activeLabel[p] == 1:
+        material_id = materialLabel[p]  # Get the material ID of the current particle
+        stress = particle_stress[p]
+        grid_pos = (particle_x[p]-minBounds) * inv_dx
+        base_pos_x = wp.int(grid_pos[0] - 0.5)
+        base_pos_y = wp.int(grid_pos[1] - 0.5)
+        base_pos_z = wp.int(grid_pos[2] - 0.5)
+        fx = grid_pos - wp.vec3(
+            wp.float(base_pos_x), wp.float(base_pos_y), wp.float(base_pos_z)
+        )
+        wa = wp.vec3(1.5) - fx
+        wb = fx - wp.vec3(1.0)
+        wc = fx - wp.vec3(0.5)
+        w = wp.mat33(
+            wp.cw_mul(wa, wa) * 0.5,
+            wp.vec3(0.0, 0.0, 0.0) - wp.cw_mul(wb, wb) + wp.vec3(0.75),
+            wp.cw_mul(wc, wc) * 0.5,
+        )
+        dw = wp.mat33(fx - wp.vec3(1.5), -2.0 * (fx - wp.vec3(1.0)), fx - wp.vec3(0.5))
+        
+        for i in range(0, 3):
+            for j in range(0, 3):
+                for k in range(0, 3):
+                    dpos = (
+                        wp.vec3(wp.float(i), wp.float(j), wp.float(k)) - fx
+                    ) * dx
+                    ix = base_pos_x + i
+                    iy = base_pos_y + j
+                    iz = base_pos_z + k
+                    weight = w[0, i] * w[1, j] * w[2, k]  # tricubic interpolation
+                    dweight = compute_dweight(inv_dx, w, dw, i, j, k)
+                    C = particle_C[p]
+                    # if model.rpic = 0, standard apic
+                    C = (1.0 - rpic_damping) * C + rpic_damping / 2.0 * (
+                        C - wp.transpose(C)
+                    )
+                    if rpic_damping < -0.001:
+                        # standard pic
+                        C = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+
+                    elastic_force = -particle_vol[p] * stress * dweight
+                    v_in_add = (
+                        weight
+                        * particle_mass[p]
+                        * (particle_v[p] + C * dpos)
+                        + dt * elastic_force
+                    )
+                    wp.atomic_add(grid_v_in, ix, iy, iz, v_in_add)
+                    wp.atomic_add(
+                        grid_m, ix, iy, iz, weight * particle_mass[p]
+                    )
+
+@wp.kernel
+def get_float_array_product(
+    arrayA: wp.array(dtype=float),
+    arrayB: wp.array(dtype=float),
+    arrayC: wp.array(dtype=float),
+):
+    tid = wp.tid()
+    arrayC[tid] = arrayA[tid] * arrayB[tid]

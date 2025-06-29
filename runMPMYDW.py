@@ -31,7 +31,8 @@ headless=False,
 enable_backface_culling=True)
 renderer._camera_speed = 0.5
 
-# load the material points
+#LOAD THE DATA AND INFER THE GRID##############################################################################################################
+
 domainFile="./exampleDomains/annular_arch_particles.h5"
 h5file = h5py.File(domainFile, "r")
 x, particle_volume = h5file["x"], h5file["particle_volume"]
@@ -51,6 +52,7 @@ particleDiameter = np.mean(particle_volume)**0.33
 
 # Compute grid spacing (assume cubic)
 dx = particleDiameter*2
+invdx= 1.0 / dx
 
 # Compute number of cells in each dimension (ensure int)
 gridDims = np.ceil((maxBounds - minBounds) / dx).astype(int)
@@ -66,12 +68,6 @@ X, Y, Z = np.meshgrid(x_vals, y_vals, z_vals, indexing='ij')
 centroids = np.vstack((X.ravel(), Y.ravel(), Z.ravel())).T
 
 print(f"Total grid centroids: {centroids.shape[0]}")
-
-# grid mass, velocities, etc.
-
-grid_m = wp.zeros(shape=gridDims, dtype=float, device=device,)
-grid_v_in = wp.zeros(shape=gridDims, dtype=float, device=device,)
-grid_v_out = wp.zeros(shape=gridDims, dtype=float, device=device,)
 
 #PARAMETERS###############################################################################################################################
 
@@ -109,6 +105,7 @@ softening=np.full(nPoints, softening, dtype=np.float32) #youngs modulus per poin
 
 # other parameters
 materialLabel = np.ones(nPoints, dtype=np.int32) #material label per point. 1 = solid, 2 = particle, etc
+activeLabel = np.ones(nPoints, dtype=np.int32) #activity label per point. 1 = on, 0 = off, or other. activity and mertial is separated to allow for different materials to be active or inactive at different times
 
 gravity = -9.81 #gravity in m/s^2, negative value for downward direction
 
@@ -131,10 +128,11 @@ wp.launch(kernel = mpmRoutines.compute_mu_lam_bulk_from_E_nu,
 ys = wp.array(ys, dtype=wp.float32, device=device) #yield stress per point
 
 materialLabel = wp.array(materialLabel, dtype=wp.int32, device=device)
+activeLabel = wp.array(activeLabel, dtype=wp.int32, device=device)
 
 gravity = wp.vec3(0.0, 0.0, gravity) #gravity vector
 
-rho = wp.array(density, dtype=wp.float32, device=device)
+particle_density = wp.array(density, dtype=wp.float32, device=device)
 
 hardening = wp.array(hardening, dtype=wp.int32, device=device)
 xi = wp.array(xi, dtype=wp.float32, device=device)
@@ -144,9 +142,27 @@ softening = wp.array(softening, dtype=wp.float32, device=device)
 
 # dynamic point parameters
 particle_x= wp.array(x, dtype=wp.vec3)  # current position
+particle_vol = wp.array(particle_volume, dtype=float)  # particle volume
+particle_mass = wp.zeros(shape=nPoints, dtype=float)  # particle volume
+wp.launch(kernel=mpmRoutines.get_float_array_product, 
+          dim=nPoints, 
+          inputs=[particle_density,
+                  particle_vol,
+                  particle_mass], 
+          device=device)
+
+particle_v= wp.zeros(shape=nPoints,dtype=wp.vec3)  # current velocity
 particle_F= wp.zeros(shape=nPoints,dtype=wp.mat33)  # particle elastic deformation gradient
 particle_F_trial= wp.zeros(shape=nPoints,dtype=wp.mat33)  # particle elastic deformation gradient
 particle_stress= wp.zeros(shape=nPoints,dtype=wp.mat33)  # particle elastic deformation gradient
+particle_C = wp.zeros(shape=nPoints, dtype=wp.mat33) # particle elastic right Cauchy-Green deformation tensor
+
+# grid parameters- mass, velocities, etc.
+
+grid_m = wp.zeros(shape=gridDims, dtype=float, device=device,)
+grid_v_in = wp.zeros(shape=gridDims, dtype=wp.vec3, device=device,)
+grid_v_out = wp.zeros(shape=gridDims, dtype=wp.vec3, device=device,)
+minBounds = wp.vec3(minBounds[0], minBounds[1], minBounds[2])  # minimum bounds of the grid
 
 #BOUNDARY CONDITIONS (DO THIS LATER)###############################################################################################################################
 
@@ -156,6 +172,8 @@ dt = 1e-4 #time step in seconds
 dtxpbd=1e-2 #time step for xpbd in seconds
 mpmStepsPerXpbdStep = int(dtxpbd/dt) #number of mpm steps per xpbd step
 nSteps = 1 #number of simulation steps
+
+rpic_damping = 0.0 #damping factor for the particle to grid transfer, 0.0 means no damping
 
 t=0
 counter=0
@@ -169,13 +187,14 @@ for step in range(nSteps):
     grid_v_in.zero_()
     grid_v_out.zero_()
 
-    # apply boundary conditions on points (do this later)
+    # apply boundary and external conditions on points
 
 
-    # compute stress per point 
+    # compute stress per point from deformation gradient
     wp.launch(kernel = mpmRoutines.compute_stress_from_F_trial, 
               dim = nPoints, 
-              inputs = [materialLabel, 
+              inputs = [activeLabel,
+                        materialLabel, 
                         particle_F,
                         particle_F_trial,
                         mu,
@@ -188,10 +207,41 @@ for step in range(nSteps):
               device=device)
 
     # perform particle to grid transfer - special consideration for material type 2 
+    wp.launch(
+        kernel=mpmRoutines.p2g_apic_with_stress,
+        dim=nPoints,
+        inputs=[activeLabel,
+                materialLabel, 
+                particle_stress,
+                particle_x,
+                particle_v,
+                particle_C,
+                particle_vol,
+                particle_mass,
+                dx,
+                invdx,
+                minBounds,
+                rpic_damping,
+                grid_m,
+                grid_v_in,
+                dt],
+        device=device,
+    )  
 
-    # compute grid updates including external forces and grid-based boundary conditions
+    # apply external forces and damping on the grid
+
+
 
     # perform grid to particle transfer
+
+    fs5PlotUtils.save_grid_and_particles_vti_vtp(
+        output_prefix="./output/sim_step_0000",
+        grid_mass=grid_m.numpy(),              # shape (nx, ny, nz)
+        minBounds=minBounds,                         # (x0, y0, z0)
+        dx=dx,
+        particle_positions=particle_x.numpy(),          # shape (N, 3)
+        particle_radius=1                         # for Point Gaussian
+    )
 
     # perform the xpbd step if timestep has reached the threshold
     if np.mod(counter, mpmStepsPerXpbdStep) == 0 and counter>0:

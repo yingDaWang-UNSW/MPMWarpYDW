@@ -1,5 +1,8 @@
-utils/__pycache__/*
-exampleDomains/__pycache__/*
-__pycache__/
+utils/__pycache__*
+exampleDomains/__pycache__*
+__pycache__/*
 *.py[cod]
 *$py.class
+utils/__pycache__*
+output/*
+*pyc
