@@ -39,33 +39,32 @@ def compute_stress_from_F_trial(
 ):
     p = wp.tid()
     # apply return mapping on mpm active particles
-    if materialLabel[p] == 1 and activeLabel[p] == 1:
-        particle_F[p] = von_mises_return_mapping_with_damage_YDW(
-            particle_F_trial[p], 
-            materialLabel,
-            mu,
-            lam,
-            yield_stress,
-            hardening,
-            xi,
-            softening, 
-            p
-        )
+    if materialLabel[p] == 1:
+        if activeLabel[p] == 1:
+            particle_F[p] = von_mises_return_mapping_with_damage_YDW(
+                particle_F_trial[p], 
+                materialLabel,
+                mu,
+                lam,
+                yield_stress,
+                hardening,
+                xi,
+                softening, 
+                p
+            )
 
-        # compute stress here
-        J = wp.determinant(particle_F[p])
-        U = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-        V = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-        sig = wp.vec3(0.0)
-        stress = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-        wp.svd3(particle_F[p], U, sig, V)
+            # compute stress here
+            J = wp.determinant(particle_F[p])
+            U = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+            V = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+            sig = wp.vec3(0.0)
+            stress = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+            wp.svd3(particle_F[p], U, sig, V)
 
-        stress = kirchoff_stress_drucker_prager(
-            particle_F[p], U, V, sig, mu[p], lam[p]
-        )
+            stress = kirchoff_stress_drucker_prager(particle_F[p], U, V, sig, mu[p], lam[p])
 
-        stress = (stress + wp.transpose(stress)) / 2.0  # enfore symmetry
-        particle_stress[p] = stress
+            stress = (stress + wp.transpose(stress)) / 2.0  # enfore symmetry
+            particle_stress[p] = stress
 
 @wp.func
 def von_mises_return_mapping_with_damage_YDW(
@@ -79,16 +78,6 @@ def von_mises_return_mapping_with_damage_YDW(
     softening: wp.array(dtype=float),
     p: int
 ):
-    # This function implements the return mapping algorithm for von Mises plasticity with damage.
-    # It computes the trial stress, checks if it exceeds the yield stress,
-    # and if so, applies the return mapping to compute the elastic deformation gradient.
-    # If the yield stress is exceeded, it also applies damage to the material properties.
-    # The function returns the elastic deformation gradient if plasticity occurs, otherwise returns the trial deformation gradient.
-    # Note: This function assumes that the material properties (mu, lam, yield_stress) are already set in the model.
-    # The function also assumes that the model has a 'softening' parameter that controls the damage.
-    # If the yield stress is exceeded, the yield stress is reduced by a softening factor.
-    # If the yield stress becomes zero or negative, the material is considered fully damaged and mu and lam are set to zero.
-
     U = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
     V = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
     sig_old = wp.vec3(0.0) 
@@ -108,8 +97,8 @@ def von_mises_return_mapping_with_damage_YDW(
         tau[0] - sum_tau / 3.0, tau[1] - sum_tau / 3.0, tau[2] - sum_tau / 3.0
     )
     if wp.length(cond) > yield_stress[p]:
-        if wp.length(cond) > yield_stress[p]*1.25:
-            materialLabel[p] = 2
+        # if wp.length(cond) > yield_stress[p]*1.25:
+        #     materialLabel[p] = 2
             # model.mu[p] = model.mu[p]*0.01
             # model.lam[p] = model.lam[p]*0.01
         if yield_stress[p] <= 0:
@@ -147,9 +136,9 @@ def von_mises_return_mapping_with_damage_YDW(
 def kirchoff_stress_drucker_prager(
     F: wp.mat33, U: wp.mat33, V: wp.mat33, sig: wp.vec3, mu: float, lam: float
 ):
-    sig0 = wp.max(sig[0], 1e-16)
-    sig1 = wp.max(sig[1], 1e-16)
-    sig2 = wp.max(sig[2], 1e-16)
+    sig0 = wp.max(sig[0], 1e-6)
+    sig1 = wp.max(sig[1], 1e-6)
+    sig2 = wp.max(sig[2], 1e-6)
 
     log_sig_sum = wp.log(sig0) + wp.log(sig1) + wp.log(sig2)
 
@@ -246,6 +235,47 @@ def p2g_apic_with_stress(
                         grid_m, ix, iy, iz, weight * particle_mass[p]
                     )
 
+
+@wp.kernel
+def set_mat33_to_identity(target_array: wp.array(dtype=wp.mat33)):
+    tid = wp.tid()
+    target_array[tid] = wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
+
+
+@wp.kernel
+def add_identity_to_mat33(target_array: wp.array(dtype=wp.mat33)):
+    tid = wp.tid()
+    target_array[tid] = wp.add(
+        target_array[tid], wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
+    )
+
+
+@wp.kernel
+def subtract_identity_to_mat33(target_array: wp.array(dtype=wp.mat33)):
+    tid = wp.tid()
+    target_array[tid] = wp.sub(
+        target_array[tid], wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
+    )
+
+
+@wp.kernel
+def add_vec3_to_vec3(
+    first_array: wp.array(dtype=wp.vec3), second_array: wp.array(dtype=wp.vec3)
+):
+    tid = wp.tid()
+    first_array[tid] = wp.add(first_array[tid], second_array[tid])
+
+
+@wp.kernel
+def set_value_to_float_array(target_array: wp.array(dtype=float), value: float):
+    tid = wp.tid()
+    target_array[tid] = value
+
+@wp.kernel
+def set_value_to_int_array(target_array: wp.array(dtype=wp.int32), value: int):
+    tid = wp.tid()
+    target_array[tid] = value
+
 @wp.kernel
 def get_float_array_product(
     arrayA: wp.array(dtype=float),
@@ -254,3 +284,176 @@ def get_float_array_product(
 ):
     tid = wp.tid()
     arrayC[tid] = arrayA[tid] * arrayB[tid]
+
+# add gravity
+@wp.kernel
+def grid_normalization_and_gravity(
+    grid_m: wp.array(dtype=float, ndim=3),
+    grid_v_in: wp.array(dtype=wp.vec3, ndim=3),
+    grid_v_out: wp.array(dtype=wp.vec3, ndim=3),
+    gravity: wp.vec3,
+    dt: float):
+
+    grid_x, grid_y, grid_z = wp.tid()
+    if grid_m[grid_x, grid_y, grid_z] > 1e-15:
+        v_out = grid_v_in[grid_x, grid_y, grid_z] * (1.0 / grid_m[grid_x, grid_y, grid_z])
+        # add gravity
+        v_out = v_out + dt * gravity# * wp.min(t/10.0,1.0)
+        grid_v_out[grid_x, grid_y, grid_z] = v_out
+
+@wp.kernel
+def add_damping_via_grid(    
+    grid_v_out: wp.array(dtype=wp.vec3, ndim=3),
+    scale: float):
+    grid_x, grid_y, grid_z = wp.tid()
+    grid_v_out[grid_x, grid_y, grid_z] = (grid_v_out[grid_x, grid_y, grid_z] * scale)
+
+
+
+@wp.kernel
+def g2p(dt: float,
+        activeLabel: wp.array(dtype=wp.int32),
+        materialLabel: wp.array(dtype=wp.int32),
+        particle_x: wp.array(dtype=wp.vec3),
+        particle_v: wp.array(dtype=wp.vec3),
+        particle_C: wp.array(dtype=wp.mat33),
+        particle_F: wp.array(dtype=wp.mat33),
+        particle_F_trial: wp.array(dtype=wp.mat33),
+        particle_cov: wp.array(dtype=float),
+        inv_dx: float,
+        grid_v_out: wp.array(dtype=wp.vec3, ndim=3),
+        update_cov_with_F: bool,
+        minBounds: wp.vec3,
+        ):
+    p = wp.tid()
+    if activeLabel[p] == 1:
+        material_id = materialLabel[p]  # Get the material ID of the current particle
+        grid_pos = (particle_x[p]-minBounds) * inv_dx
+        base_pos_x = wp.int(grid_pos[0] - 0.5)
+        base_pos_y = wp.int(grid_pos[1] - 0.5)
+        base_pos_z = wp.int(grid_pos[2] - 0.5)
+        fx = grid_pos - wp.vec3(
+            wp.float(base_pos_x), wp.float(base_pos_y), wp.float(base_pos_z)
+        )
+        wa = wp.vec3(1.5) - fx
+        wb = fx - wp.vec3(1.0)
+        wc = fx - wp.vec3(0.5)
+        w = wp.mat33(
+            wp.cw_mul(wa, wa) * 0.5,
+            wp.vec3(0.0, 0.0, 0.0) - wp.cw_mul(wb, wb) + wp.vec3(0.75),
+            wp.cw_mul(wc, wc) * 0.5,
+        )
+        dw = wp.mat33(fx - wp.vec3(1.5), -2.0 * (fx - wp.vec3(1.0)), fx - wp.vec3(0.5))
+        new_v = wp.vec3(0.0, 0.0, 0.0)
+        new_C = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        new_F = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        for i in range(0, 3):
+            for j in range(0, 3):
+                for k in range(0, 3):
+                    ix = base_pos_x + i
+                    iy = base_pos_y + j
+                    iz = base_pos_z + k
+                    dpos = wp.vec3(wp.float(i), wp.float(j), wp.float(k)) - fx
+                    weight = w[0, i] * w[1, j] * w[2, k]  # tricubic interpolation
+                    grid_v = grid_v_out[ix, iy, iz]
+                    new_v = new_v + grid_v * weight
+                    new_C = new_C + wp.outer(grid_v, dpos) * (
+                        weight * inv_dx * 4.0
+                    )
+                    dweight = compute_dweight(inv_dx, w, dw, i, j, k)
+                    new_F = new_F + wp.outer(grid_v, dweight)
+
+        particle_v[p] = new_v
+        particle_x[p] = particle_x[p] + dt * new_v
+        particle_C[p] = new_C
+        I33 = wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
+        F_tmp = (I33 + new_F * dt) * particle_F[p]
+        particle_F_trial[p] = F_tmp
+
+        if update_cov_with_F:
+            update_cov(particle_cov, p, new_F, dt)
+
+
+@wp.func
+def update_cov(particle_cov: wp.array(dtype=float),
+               p: int, 
+               grad_v: wp.mat33, 
+               dt: float):
+    cov_n = wp.mat33(0.0)
+    cov_n[0, 0] = particle_cov[p * 6]
+    cov_n[0, 1] = particle_cov[p * 6 + 1]
+    cov_n[0, 2] = particle_cov[p * 6 + 2]
+    cov_n[1, 0] = particle_cov[p * 6 + 1]
+    cov_n[1, 1] = particle_cov[p * 6 + 3]
+    cov_n[1, 2] = particle_cov[p * 6 + 4]
+    cov_n[2, 0] = particle_cov[p * 6 + 2]
+    cov_n[2, 1] = particle_cov[p * 6 + 4]
+    cov_n[2, 2] = particle_cov[p * 6 + 5]
+
+    cov_np1 = cov_n + dt * (grad_v * cov_n + cov_n * wp.transpose(grad_v))
+
+    particle_cov[p * 6] = cov_np1[0, 0]
+    particle_cov[p * 6 + 1] = cov_np1[0, 1]
+    particle_cov[p * 6 + 2] = cov_np1[0, 2]
+    particle_cov[p * 6 + 3] = cov_np1[1, 1]
+    particle_cov[p * 6 + 4] = cov_np1[1, 2]
+    particle_cov[p * 6 + 5] = cov_np1[2, 2]
+
+# the domain is bounded by a box
+@wp.func
+def apply_coulomb_friction(v: float, friction_force: float) -> float:
+    s = wp.sign(v)
+    return s * wp.max(wp.abs(v) - friction_force, 0.0)
+
+@wp.kernel
+def collideBounds(
+    grid_v_out: wp.array(dtype=wp.vec3, ndim=3),
+    grid_dim_x: int,
+    grid_dim_y: int,
+    grid_dim_z: int,
+    friction_force: float,  # e.g., mu * g * dt
+):
+    grid_x, grid_y, grid_z = wp.tid()
+    padding = 3
+    v = grid_v_out[grid_x, grid_y, grid_z]
+
+    if grid_x < padding and v[0] < 0.0:
+        grid_v_out[grid_x, grid_y, grid_z] = wp.vec3(
+            0.0,
+            apply_coulomb_friction(v[1], friction_force),
+            apply_coulomb_friction(v[2], friction_force),
+        )
+    if grid_x >= grid_dim_x - padding and v[0] > 0.0:
+        grid_v_out[grid_x, grid_y, grid_z] = wp.vec3(
+            0.0,
+            apply_coulomb_friction(v[1], friction_force),
+            apply_coulomb_friction(v[2], friction_force),
+        )
+
+    if grid_y < padding and v[1] < 0.0:
+        grid_v_out[grid_x, grid_y, grid_z] = wp.vec3(
+            apply_coulomb_friction(v[0], friction_force),
+            0.0,
+            apply_coulomb_friction(v[2], friction_force),
+        )
+    if grid_y >= grid_dim_y - padding and v[1] > 0.0:
+        grid_v_out[grid_x, grid_y, grid_z] = wp.vec3(
+            apply_coulomb_friction(v[0], friction_force),
+            0.0,
+            apply_coulomb_friction(v[2], friction_force),
+        )
+
+    if grid_z < padding and v[2] < 0.0:
+        grid_v_out[grid_x, grid_y, grid_z] = wp.vec3(
+            apply_coulomb_friction(v[0], friction_force),
+            apply_coulomb_friction(v[1], friction_force),
+            0.0,
+        )
+    if grid_z >= grid_dim_z - padding and v[2] > 0.0:
+        grid_v_out[grid_x, grid_y, grid_z] = wp.vec3(
+            apply_coulomb_friction(v[0], friction_force),
+            apply_coulomb_friction(v[1], friction_force),
+            0.0,
+        )
+
+# routines to extract rotation and covariance from deformation gradient
