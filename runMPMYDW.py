@@ -8,35 +8,36 @@ device = "cuda:0"
 from utils import fs5PlotUtils
 from utils import fs5RendererCore
 from utils import mpmRoutines
+from utils import xpbdRoutines
 import numpy as np
 np.seterr(over='raise')
 
 # simulation parameters
-dt = 4e-3 #time step in seconds 
+dt = 1e-3 #time step in seconds 
 dtxpbd=1e-2 #time step for xpbd in seconds
 mpmStepsPerXpbdStep = int(dtxpbd/dt) #number of mpm steps per xpbd step
-nSteps = 10000000 #number of simulation steps
+nSteps = 25000 #number of simulation steps
 
 rpic_damping = 0.0 #damping factor for the particle to grid transfer, 0.0 means no damping
 grid_v_damping_scale = 1.1 #damping factor for the grid velocity, 1.0 means no damping
 update_cov = True #whether to update the covariance matrix during the grid to particle transfer
 
 render = True #whether to render the simulation
-
+saveFlag = True
 #LOAD THE DATA AND INFER THE GRID##############################################################################################################
 
 domainFile="./exampleDomains/annular_arch_particles.h5"
 h5file = h5py.File(domainFile, "r")
 x, particle_volume = h5file["x"], h5file["particle_volume"]
 x=np.array(x).T
-x=x+np.random.rand(x.shape[0], x.shape[1]) # add some noise to the particle positions
+# x=x+np.random.rand(x.shape[0], x.shape[1]) # add some noise to the particle positions
 
 nPoints= x.shape[0]
 print(f"Number of particles: {nPoints}")
 
 # infer the grid parameters from the particle positions
-minBounds=np.min(x,0)-25
-maxBounds=np.max(x,0)+25
+minBounds=np.min(x,0)-[25, 25, 25]
+maxBounds=np.max(x,0)+[25, 25, 25]
 
 particleDiameter = np.mean(particle_volume)**0.33
 
@@ -66,32 +67,25 @@ print(f"Total grid centroids: {centroids.shape[0]}")
 density = 3000.0 #density of the material
 density = np.full(nPoints, density, dtype=np.float32) #density per point
 
-E=1e8 #youngs modulus
+E=1e9 #youngs modulus
 E=np.full(nPoints, E, dtype=np.float32) #youngs modulus per point
 
 nu=0.3 #poisson ratio
 nu=np.full(nPoints, nu, dtype=np.float32) #poisson ratio per point
 
-ys=1e6 #yield stress
+ys=1e5 #yield stress
 ys=np.full(nPoints, ys, dtype=np.float32) #yield stress per point
 
 # custom parameters associated with the constitutive model
 
-hardening=0
+hardening=1
 hardening=np.full(nPoints, hardening, dtype=np.int32) #youngs modulus per point
 
-xi=0.0
+xi=10
 xi=np.full(nPoints, xi, dtype=np.float32) #youngs modulus per point
 
-softening=1e6
+softening=0
 softening=np.full(nPoints, softening, dtype=np.float32) #youngs modulus per point
-
-# xpbd parameters
-
-
-
-
-
 
 # other parameters
 materialLabel = np.ones(nPoints, dtype=np.int32) #material label per point. 1 = solid, 2 = particle, etc
@@ -120,6 +114,9 @@ ys = wp.array(ys, dtype=wp.float32, device=device) #yield stress per point
 materialLabel = wp.array(materialLabel, dtype=wp.int32, device=device)
 activeLabel = wp.array(activeLabel, dtype=wp.int32, device=device)
 
+# mpmParticleCount = np.sum(materialLabel.numpy() == 1) 
+
+
 gravity = wp.vec3(0.0, 0.0, gravity) #gravity vector
 
 particle_density = wp.array(density, dtype=wp.float32, device=device)
@@ -130,7 +127,7 @@ softening = wp.array(softening, dtype=wp.float32, device=device)
 
 
 
-# dynamic point parameters
+# dynamic material point parameters
 particle_x= wp.array(x, dtype=wp.vec3)  # current position
 particle_vol = wp.array(particle_volume, dtype=float)  # particle volume
 particle_mass = wp.zeros(shape=nPoints, dtype=float)  # particle volume
@@ -157,15 +154,37 @@ particle_stress= wp.zeros(shape=nPoints,dtype=wp.mat33)  # particle elastic defo
 particle_C = wp.zeros(shape=nPoints, dtype=wp.mat33) # particle elastic right Cauchy-Green deformation tensor
 particle_init_cov = wp.zeros(shape=nPoints * 6, dtype=float, device=device)  # initial covariance matrix
 particle_cov = wp.zeros(shape=nPoints * 6, dtype=float, device=device)  
-radii=particle_vol.numpy()**.33*np.pi/6
+particle_radius=wp.array(particle_vol.numpy()**.33*np.pi/6) # particle radius, assuming spherical particles
 
 # grid parameters- mass, velocities, etc.
 
 grid_m = wp.zeros(shape=gridDims, dtype=float, device=device,) # grid mass from particles
-grid_v_in = wp.zeros(shape=gridDims, dtype=wp.vec3, device=device,) # grid momentum from particles
+grid_v_in = wp.zeros(shape=gridDims, dtype=wp.vec3, device=device,) # grsid momentum from particles
 grid_v_out = wp.zeros(shape=gridDims, dtype=wp.vec3, device=device,) # grid velocity to particles
 minBounds = wp.vec3(minBounds[0], minBounds[1], minBounds[2])  # minimum bounds of the grid
+maxBounds = wp.vec3(maxBounds[0], maxBounds[1], maxBounds[2]) 
+
 boundFriction = 0.0 # friction coefficient for the bounding box velocity boundary condition
+
+
+# xpbd parameters
+particle_x_integrated = wp.zeros(shape=nPoints, dtype=wp.vec3)   #  position to iterate on
+particle_v_integrated = wp.zeros(shape=nPoints, dtype=wp.vec3)  # velocity to iterate on
+particle_x_deltaInt = wp.zeros(shape=nPoints, dtype=wp.vec3)   #  position to iterate on
+particle_v_deltaInt = wp.zeros(shape=nPoints, dtype=wp.vec3)  # velocity to iterate on
+particle_delta = wp.zeros(shape=nPoints, dtype=wp.vec3)  # delta to iterate on
+particle_grid = wp.HashGrid(128, 128, 128)
+xpbd_relaxation = 1.0  # relaxation factor for xpbd
+dynamicParticleFriction = 0.05  # dynamic friction for xpbd
+staticVelocityThreshold = 1e-5  # threshold for static ground velocity
+staticParticleFriction = 0.1  # static friction for xpbd
+xpbd_iterations = 4
+particle_v_max = 10.0#np.inf
+particle_cohesion=0.0
+max_radius = np.max(particle_radius.numpy())
+minBoundsXPBD = wp.vec3(minBounds[0]+3*dx, minBounds[1]+3*dx, minBounds[2]+3*dx)  # minimum bounds of the grid
+maxBoundsXPBD = wp.vec3(maxBounds[0]-3*dx, maxBounds[1]-3*dx, maxBounds[2]-3*dx) 
+# xpbdParticleCount = np.sum(materialLabel.numpy() == 2) # count of xpbd particles, i.e. particles with material label 2
 #BOUNDARY CONDITIONS (DO THIS LATER)###############################################################################################################################
 
 startBounds=0.0
@@ -201,9 +220,10 @@ if render:
 t=0
 counter=0
 for step in range(nSteps):
-    print(f'MPM step {step+1}/{nSteps}, time: {t:.4f}s, counter: {counter}')
 
     # perform the mpm simulation step
+    # if mpmParticleCount>0:
+    # print(f'MPM step {step+1}/{nSteps}, time: {t:.4f}s, counter: {counter}')
 
     # zero the grids
     grid_m.zero_()
@@ -213,10 +233,10 @@ for step in range(nSteps):
     # apply boundary and external conditions on points
 
 
-    # compute stress per point from deformation gradient
+    # compute stress per point from deformation gradient on the mpm particle points
     wp.launch(kernel = mpmRoutines.compute_stress_from_F_trial, 
-              dim = nPoints, 
-              inputs = [activeLabel,
+            dim = nPoints, 
+            inputs = [activeLabel,
                         materialLabel, 
                         particle_F,
                         particle_F_trial,
@@ -227,9 +247,9 @@ for step in range(nSteps):
                         xi,
                         softening,
                         particle_stress],
-              device=device)
+            device=device)
 
-    # perform particle to grid transfer - special consideration for material type 2 
+    # perform particle to grid transfer for all particles
     wp.launch(
         kernel=mpmRoutines.p2g_apic_with_stress,
         dim=nPoints,
@@ -284,10 +304,7 @@ for step in range(nSteps):
                 boundFriction],
         device=device,
     )
-
-    # perform grid to particle transfer
-
-
+    # perform grid to particle transfer on the mpm particle points
     wp.launch(
         kernel=mpmRoutines.g2p,
         dim=nPoints,
@@ -307,53 +324,153 @@ for step in range(nSteps):
         device=device,
     )  # x, v, C, F_trial are updated
 
-    # # save points and fields for visualization
-    # fs5PlotUtils.save_grid_and_particles_vti_vtp(
-    #     output_prefix="./output/sim_step_0000",
-    #     grid_mass=grid_m.numpy(),              # shape (nx, ny, nz)
-    #     minBounds=minBounds,                         # (x0, y0, z0)
-    #     dx=dx,
-    #     particle_positions=particle_x.numpy(),          # shape (N, 3)
-    #     particle_radius=1                         # for Point Gaussian
-    # )
-
     # perform the xpbd step if timestep has reached the threshold
     if np.mod(counter, mpmStepsPerXpbdStep) == 0 and counter>0:
-        # perform xpbd step
-        print('Performing XPBD step')
-        # in xpbd, the mpm points are treated as particles. The material 1 points are static, and the material 2 points are in motion. Deltas are calculated and applied for the material 2 points in relation to contact with all points.   
-    
-        # xpbd particles need to interact with MPM points - so xpbd particles need to project onto the grid, then g2p appluies to the mpm particles with xpbd contributions. xpbd particles are updated from xpbd contact collisions with mpm points as static contributions.
+        print(f'XPBD Step: {counter}, Time: {t}')
+
+        # wp.launch(
+        #         kernel=mpmRoutines.set_value_to_float_array,
+        #         dim=nPoints,
+        #         inputs=[particle_radius, max_radius],
+        #         device=device,
+        #     )
+        
+        particle_grid.build(particle_x, dx)
+
+        # integrate the particles using xpbd with only gravity - impluse forces are handled elsewhere in conjunction with mpm particles
+        wp.copy(particle_x_integrated,particle_x)
+        wp.copy(particle_v_integrated,particle_v)
+        wp.launch(
+            kernel=xpbdRoutines.integrateParticlesXPBD,
+            dim=nPoints,
+            inputs=[
+                activeLabel,
+                materialLabel,
+                particle_x,
+                particle_v,
+                gravity,
+                dtxpbd,
+                particle_x_integrated,
+                particle_v_integrated,
+                particle_v_max
+            ],
+            device=device,
+        )
+        # iterate xpbd contacts
+        for i in range(xpbd_iterations):
+            particle_delta.zero_()
+
+            wp.launch(
+                kernel=xpbdRoutines.my_solve_particle_bound_contacts,
+                dim=nPoints,
+                inputs=[
+                    activeLabel,
+                    materialLabel,
+                    particle_x_integrated,
+                    particle_v_integrated,
+                    particle_mass,
+                    particle_radius,
+                    dynamicParticleFriction,
+                    staticVelocityThreshold,
+                    staticParticleFriction,
+                    minBoundsXPBD,
+                    maxBoundsXPBD,
+                    dtxpbd,
+                    xpbd_relaxation,
+                ],
+                outputs=[particle_delta],
+                device=device,
+            )
+            wp.launch(
+                kernel=xpbdRoutines.my_solve_particle_particle_contacts,
+                dim=nPoints,
+                inputs=[
+                    activeLabel,
+                    materialLabel,
+                    particle_grid.id,
+                    particle_x_integrated,
+                    particle_v_integrated,
+                    particle_mass,
+                    particle_radius,
+                    dynamicParticleFriction,
+                    staticVelocityThreshold,
+                    staticParticleFriction,
+                    particle_cohesion,
+                    max_radius,
+                    dtxpbd,
+                    xpbd_relaxation,
+                ],
+                outputs=[particle_delta],
+                device=device
+            )
+            # print(f'Particle delta max: {particle_delta.numpy().max()}')
+            wp.copy(particle_v_deltaInt, particle_v_integrated)
+            wp.copy(particle_x_deltaInt, particle_x_integrated)
+            wp.launch(
+                kernel=xpbdRoutines.my_apply_particle_deltas,
+                dim=nPoints,
+                inputs=[
+                    activeLabel,
+                    materialLabel,
+                    particle_x,
+                    particle_x_integrated,
+                    particle_delta,
+                    dtxpbd,
+                    particle_v_max
+                ],
+                outputs=[
+                    particle_x_deltaInt,
+                    particle_v_deltaInt
+                ],
+                device=device,
+            )
+            wp.copy(particle_v_integrated, particle_v_deltaInt)
+            wp.copy(particle_x_integrated, particle_x_deltaInt)
+
+        particle_x.assign(particle_x_integrated)
+        particle_v.assign(particle_v_integrated)
+
 
     t=t+dt
     counter=counter+1
     if np.mod(counter,250)==0:
-        print(f'step: {counter}, time: {t}')
-        renderer.begin_frame()
-        # colors=fs5PlotUtils.values_to_rgb(materialLabel,min_val=0, max_val=15)
-        # colors=fs5PlotUtils.values_to_rgb(ys.numpy(),min_val=0.0, max_val=ys.numpy().max())
-        # colors=fs5PlotUtils.values_to_rgb(particle_v.numpy()[:,2],min_val=particle_v.numpy()[:,2].min(), max_val=particle_v.numpy()[:,2].max())
+        print(f'Step: {counter}, Time: {t}, r: {particle_radius.numpy().max()}')
+        if render:
+            renderer.begin_frame()
+            # colors=fs5PlotUtils.values_to_rgb(np.arange(0,nPoints,1),min_val=0, max_val=nPoints)
+            colors=fs5PlotUtils.values_to_rgb(ys.numpy(),min_val=0.0, max_val=ys.numpy().max())
+            # colors=fs5PlotUtils.values_to_rgb(particle_v.numpy()[:,2],min_val=particle_v.numpy()[:,2].min(), max_val=particle_v.numpy()[:,2].max())
 
-        x=particle_F.numpy()
-        # x is your (N, 3, 3) array of stress tensors
-        sigma = x.astype(np.float64)  # promote to float64 if needed
+            # x=particle_stress.numpy()
+            # # x is your (N, 3, 3) array of stress tensors
+            # sigma = x.astype(np.float64)  # promote to float64 if needed
 
-        # Compute mean (hydrostatic) stress for each tensor
-        mean_stress = np.trace(sigma, axis1=1, axis2=2) / 3.0  # shape (N,)
+            # # Compute mean (hydrostatic) stress for each tensor
+            # mean_stress = np.trace(sigma, axis1=1, axis2=2) / 3.0  # shape (N,)
 
-        # Subtract mean stress from diagonal elements to get deviatoric tensor
-        identity = np.eye(3)
-        s = sigma - mean_stress[:, None, None] * identity  # broadcasted subtraction
+            # # Subtract mean stress from diagonal elements to get deviatoric tensor
+            # identity = np.eye(3)
+            # s = sigma - mean_stress[:, None, None] * identity  # broadcasted subtraction
 
-        # Compute von Mises stress
-        von_mises = np.sqrt(1.5 * np.sum(s**2, axis=(1, 2)))  # shape (N,)
+            # # Compute von Mises stress
+            # von_mises = np.sqrt(1.5 * np.sum(s**2, axis=(1, 2)))  # shape (N,)
 
-        colors=fs5PlotUtils.values_to_rgb(von_mises,min_val=np.min(von_mises), max_val=np.max(von_mises)+1)
+            # colors=fs5PlotUtils.values_to_rgb(von_mises,min_val=np.min(von_mises), max_val=np.max(von_mises)+1)
 
-        renderer.render_points(points=particle_x, name="points", radius=radii, colors=colors, dynamic=True)
-        # renderer.render_box(name='simBounds',pos=[grid_lim/2,grid_lim/2,grid_lim/2],extents=[grid_lim/2,grid_lim/2,grid_lim/2],rot=[0,0,0,1])
-        renderer.end_frame()
-        renderer.update_view_matrix()
+            renderer.render_points(points=particle_x, name="points", radius=particle_radius.numpy(), colors=colors, dynamic=True)
+            # renderer.render_box(name='simBounds',pos=[grid_lim/2,grid_lim/2,grid_lim/2],extents=[grid_lim/2,grid_lim/2,grid_lim/2],rot=[0,0,0,1])
+            renderer.end_frame()
+            renderer.update_view_matrix()
 
-        # engine_utils.save_data_at_frame(mpm_solver, directory_to_save, k, save_to_ply=1, save_to_h5=0)
-        # time.sleep(1)
+            # engine_utils.save_data_at_frame(mpm_solver, directory_to_save, k, save_to_ply=1, save_to_h5=0)
+            # time.sleep(1)
+        if saveFlag:
+            # save points and fields for visualization
+            fs5PlotUtils.save_grid_and_particles_vti_vtp(
+                output_prefix=f"./output/sim_step_{step:06d}",
+                grid_mass=grid_m.numpy(),              # shape (nx, ny, nz)
+                minBounds=minBounds,                         # (x0, y0, z0)
+                dx=dx,
+                particle_positions=particle_x.numpy(),          # shape (N, 3)
+                particle_radius=np.arange(0,nPoints,1)                         # for Point Gaussian
+            )

@@ -97,8 +97,8 @@ def von_mises_return_mapping_with_damage_YDW(
         tau[0] - sum_tau / 3.0, tau[1] - sum_tau / 3.0, tau[2] - sum_tau / 3.0
     )
     if wp.length(cond) > yield_stress[p]:
-        # if wp.length(cond) > yield_stress[p]*1.25:
-        #     materialLabel[p] = 2
+        if wp.length(cond) > yield_stress[p]*1.25:
+            materialLabel[p] = 2
             # model.mu[p] = model.mu[p]*0.01
             # model.lam[p] = model.lam[p]*0.01
         if yield_stress[p] <= 0:
@@ -183,7 +183,7 @@ def p2g_apic_with_stress(
     #                       particle_v
     #                       particle_C
     p = wp.tid()
-    if activeLabel[p] == 1:
+    if activeLabel[p] == 1: # all materials contribute to the grid so that materials that rely on the grid can interact with other materials
         material_id = materialLabel[p]  # Get the material ID of the current particle
         stress = particle_stress[p]
         grid_pos = (particle_x[p]-minBounds) * inv_dx
@@ -326,52 +326,52 @@ def g2p(dt: float,
         minBounds: wp.vec3,
         ):
     p = wp.tid()
-    if activeLabel[p] == 1:
-        material_id = materialLabel[p]  # Get the material ID of the current particle
-        grid_pos = (particle_x[p]-minBounds) * inv_dx
-        base_pos_x = wp.int(grid_pos[0] - 0.5)
-        base_pos_y = wp.int(grid_pos[1] - 0.5)
-        base_pos_z = wp.int(grid_pos[2] - 0.5)
-        fx = grid_pos - wp.vec3(
-            wp.float(base_pos_x), wp.float(base_pos_y), wp.float(base_pos_z)
-        )
-        wa = wp.vec3(1.5) - fx
-        wb = fx - wp.vec3(1.0)
-        wc = fx - wp.vec3(0.5)
-        w = wp.mat33(
-            wp.cw_mul(wa, wa) * 0.5,
-            wp.vec3(0.0, 0.0, 0.0) - wp.cw_mul(wb, wb) + wp.vec3(0.75),
-            wp.cw_mul(wc, wc) * 0.5,
-        )
-        dw = wp.mat33(fx - wp.vec3(1.5), -2.0 * (fx - wp.vec3(1.0)), fx - wp.vec3(0.5))
-        new_v = wp.vec3(0.0, 0.0, 0.0)
-        new_C = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-        new_F = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-        for i in range(0, 3):
-            for j in range(0, 3):
-                for k in range(0, 3):
-                    ix = base_pos_x + i
-                    iy = base_pos_y + j
-                    iz = base_pos_z + k
-                    dpos = wp.vec3(wp.float(i), wp.float(j), wp.float(k)) - fx
-                    weight = w[0, i] * w[1, j] * w[2, k]  # tricubic interpolation
-                    grid_v = grid_v_out[ix, iy, iz]
-                    new_v = new_v + grid_v * weight
-                    new_C = new_C + wp.outer(grid_v, dpos) * (
-                        weight * inv_dx * 4.0
-                    )
-                    dweight = compute_dweight(inv_dx, w, dw, i, j, k)
-                    new_F = new_F + wp.outer(grid_v, dweight)
+    if activeLabel[p] == 1: # both mpm and xpbd particles contribute to the grid
+        if materialLabel[p] == 1:  # only mpm particles need grid information
+            grid_pos = (particle_x[p]-minBounds) * inv_dx
+            base_pos_x = wp.int(grid_pos[0] - 0.5)
+            base_pos_y = wp.int(grid_pos[1] - 0.5)
+            base_pos_z = wp.int(grid_pos[2] - 0.5)
+            fx = grid_pos - wp.vec3(
+                wp.float(base_pos_x), wp.float(base_pos_y), wp.float(base_pos_z)
+            )
+            wa = wp.vec3(1.5) - fx
+            wb = fx - wp.vec3(1.0)
+            wc = fx - wp.vec3(0.5)
+            w = wp.mat33(
+                wp.cw_mul(wa, wa) * 0.5,
+                wp.vec3(0.0, 0.0, 0.0) - wp.cw_mul(wb, wb) + wp.vec3(0.75),
+                wp.cw_mul(wc, wc) * 0.5,
+            )
+            dw = wp.mat33(fx - wp.vec3(1.5), -2.0 * (fx - wp.vec3(1.0)), fx - wp.vec3(0.5))
+            new_v = wp.vec3(0.0, 0.0, 0.0)
+            new_C = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+            new_F = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+            for i in range(0, 3):
+                for j in range(0, 3):
+                    for k in range(0, 3):
+                        ix = base_pos_x + i
+                        iy = base_pos_y + j
+                        iz = base_pos_z + k
+                        dpos = wp.vec3(wp.float(i), wp.float(j), wp.float(k)) - fx
+                        weight = w[0, i] * w[1, j] * w[2, k]  # tricubic interpolation
+                        grid_v = grid_v_out[ix, iy, iz]
+                        new_v = new_v + grid_v * weight
+                        new_C = new_C + wp.outer(grid_v, dpos) * (
+                            weight * inv_dx * 4.0
+                        )
+                        dweight = compute_dweight(inv_dx, w, dw, i, j, k)
+                        new_F = new_F + wp.outer(grid_v, dweight)
 
-        particle_v[p] = new_v
-        particle_x[p] = particle_x[p] + dt * new_v
-        particle_C[p] = new_C
-        I33 = wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
-        F_tmp = (I33 + new_F * dt) * particle_F[p]
-        particle_F_trial[p] = F_tmp
+            particle_v[p] = new_v
+            particle_x[p] = particle_x[p] + dt * new_v
+            particle_C[p] = new_C
+            I33 = wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
+            F_tmp = (I33 + new_F * dt) * particle_F[p]
+            particle_F_trial[p] = F_tmp
 
-        if update_cov_with_F:
-            update_cov(particle_cov, p, new_F, dt)
+            if update_cov_with_F:
+                update_cov(particle_cov, p, new_F, dt)
 
 
 @wp.func
