@@ -211,3 +211,20 @@ def my_apply_particle_deltas(
 
             x_out[tid] = x_new
             v_out[tid] = v_new
+
+@wp.kernel
+def sleepParticles(
+    activeLabel: wp.array(dtype=wp.int32),
+    materialLabel: wp.array(dtype=wp.int32),
+    sleepThreshold: float,
+    radius: wp.array(dtype=float),
+    particle_positions_init: wp.array(dtype=wp.vec3),
+    particle_positions_after: wp.array(dtype=wp.vec3),
+    dt: float,
+):
+    tid = wp.tid()
+    if activeLabel[tid]==1:
+        if materialLabel[tid] == 2:
+
+            if wp.length(particle_positions_after[tid]-particle_positions_init[tid])/dt<sleepThreshold*radius[tid]:
+                particle_positions_after[tid]=particle_positions_init[tid]

@@ -78,14 +78,14 @@ ys=np.full(nPoints, ys, dtype=np.float32) #yield stress per point
 
 # custom parameters associated with the constitutive model
 
-hardening=1
-hardening=np.full(nPoints, hardening, dtype=np.int32) #youngs modulus per point
+hardening=0
+hardening=np.full(nPoints, hardening, dtype=np.int32) # 
 
 xi=10
-xi=np.full(nPoints, xi, dtype=np.float32) #youngs modulus per point
+xi=np.full(nPoints, xi, dtype=np.float32) #
 
-softening=0
-softening=np.full(nPoints, softening, dtype=np.float32) #youngs modulus per point
+softening=1e6
+softening=np.full(nPoints, softening, dtype=np.float32) #
 
 # other parameters
 materialLabel = np.ones(nPoints, dtype=np.int32) #material label per point. 1 = solid, 2 = particle, etc
@@ -167,21 +167,24 @@ maxBounds = wp.vec3(maxBounds[0], maxBounds[1], maxBounds[2])
 boundFriction = 0.0 # friction coefficient for the bounding box velocity boundary condition
 
 
-# xpbd parameters
+# xpbd parameters 
 particle_x_integrated = wp.zeros(shape=nPoints, dtype=wp.vec3)   #  position to iterate on
 particle_v_integrated = wp.zeros(shape=nPoints, dtype=wp.vec3)  # velocity to iterate on
 particle_x_deltaInt = wp.zeros(shape=nPoints, dtype=wp.vec3)   #  position to iterate on
 particle_v_deltaInt = wp.zeros(shape=nPoints, dtype=wp.vec3)  # velocity to iterate on
 particle_delta = wp.zeros(shape=nPoints, dtype=wp.vec3)  # delta to iterate on
 particle_grid = wp.HashGrid(128, 128, 128)
+
 xpbd_relaxation = 1.0  # relaxation factor for xpbd
 dynamicParticleFriction = 0.05  # dynamic friction for xpbd
 staticVelocityThreshold = 1e-5  # threshold for static ground velocity
 staticParticleFriction = 0.1  # static friction for xpbd
 xpbd_iterations = 4
-particle_v_max = np.inf
 particle_cohesion=0.0
+sleepThreshold=0.5
+
 max_radius = np.max(particle_radius.numpy())
+particle_v_max = np.inf
 minBoundsXPBD = wp.vec3(minBounds[0]+3*dx, minBounds[1]+3*dx, minBounds[2]+3*dx)  # minimum bounds of the grid
 maxBoundsXPBD = wp.vec3(maxBounds[0]-3*dx, maxBounds[1]-3*dx, maxBounds[2]-3*dx) 
 # xpbdParticleCount = np.sum(materialLabel.numpy() == 2) # count of xpbd particles, i.e. particles with material label 2
@@ -426,6 +429,19 @@ for step in range(nSteps):
             )
             wp.copy(particle_v_integrated, particle_v_deltaInt)
             wp.copy(particle_x_integrated, particle_x_deltaInt)
+
+        # sleep particles here
+        wp.launch(kernel=xpbdRoutines.sleepParticles, 
+                    dim=nPoints, 
+                    inputs=[
+                        activeLabel,
+                        materialLabel,
+                        sleepThreshold,
+                        particle_radius,
+                        particle_x,
+                        particle_x_integrated,
+                        dtxpbd], 
+                    device=device)
 
         particle_x.assign(particle_x_integrated)
         particle_v.assign(particle_v_integrated)
