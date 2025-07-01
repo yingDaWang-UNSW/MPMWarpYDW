@@ -184,6 +184,10 @@ def p2g_apic_with_stress(
     #                       particle_C
     p = wp.tid()
     if activeLabel[p] == 1: # all materials contribute to the grid so that materials that rely on the grid can interact with other materials
+        
+        # xpbd particles contribute to the grid, but their velocities need to be clipped to prevent excessive stress at the interface upon phase change
+
+
         material_id = materialLabel[p]  # Get the material ID of the current particle
         stress = particle_stress[p]
         grid_pos = (particle_x[p]-minBounds) * inv_dx

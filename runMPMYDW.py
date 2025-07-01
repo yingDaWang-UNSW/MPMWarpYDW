@@ -14,12 +14,12 @@ np.seterr(over='raise')
 
 # simulation parameters
 dt = 1e-3 #time step in seconds 
-dtxpbd=1e-2 #time step for xpbd in seconds
+dtxpbd = 1e-2 #time step for xpbd in seconds
 mpmStepsPerXpbdStep = int(dtxpbd/dt) #number of mpm steps per xpbd step
 nSteps = 25000 #number of simulation steps
 
 rpic_damping = 0.0 #damping factor for the particle to grid transfer, 0.0 means no damping
-grid_v_damping_scale = 1.1 #damping factor for the grid velocity, 1.0 means no damping
+grid_v_damping_scale = 1.1 #damping factor for the grid velocity, 1.0 or higher means no damping
 update_cov = True #whether to update the covariance matrix during the grid to particle transfer
 
 render = True #whether to render the simulation
@@ -179,7 +179,7 @@ dynamicParticleFriction = 0.05  # dynamic friction for xpbd
 staticVelocityThreshold = 1e-5  # threshold for static ground velocity
 staticParticleFriction = 0.1  # static friction for xpbd
 xpbd_iterations = 4
-particle_v_max = 10.0#np.inf
+particle_v_max = np.inf
 particle_cohesion=0.0
 max_radius = np.max(particle_radius.numpy())
 minBoundsXPBD = wp.vec3(minBounds[0]+3*dx, minBounds[1]+3*dx, minBounds[2]+3*dx)  # minimum bounds of the grid
