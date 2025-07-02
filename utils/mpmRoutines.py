@@ -27,6 +27,8 @@ def compute_mu_lam_bulk_from_E_nu(
 def compute_stress_from_F_trial(
     activeLabel: wp.array(dtype=wp.int32),
     materialLabel: wp.array(dtype=wp.int32),
+    particlePosition: wp.array(dtype=wp.vec3),
+    initialPhaseChangePosition: wp.array(dtype=wp.vec3),
     particle_F: wp.array(dtype=wp.mat33),
     particle_F_trial: wp.array(dtype=wp.mat33),
     mu:  wp.array(dtype=float),
@@ -43,6 +45,8 @@ def compute_stress_from_F_trial(
         if activeLabel[p] == 1:
             particle_F[p] = von_mises_return_mapping_with_damage_YDW(
                 particle_F_trial[p], 
+                particlePosition,
+                initialPhaseChangePosition,
                 materialLabel,
                 mu,
                 lam,
@@ -69,6 +73,8 @@ def compute_stress_from_F_trial(
 @wp.func
 def von_mises_return_mapping_with_damage_YDW(
     F_trial: wp.mat33, 
+    particlePosition: wp.array(dtype=wp.vec3),
+    initialPhaseChangePosition: wp.array(dtype=wp.vec3),
     materialLabel: wp.array(dtype=wp.int32),
     mu:  wp.array(dtype=float),
     lam:  wp.array(dtype=float),
@@ -99,6 +105,7 @@ def von_mises_return_mapping_with_damage_YDW(
     if wp.length(cond) > yield_stress[p]:
         if wp.length(cond) > yield_stress[p]*1.25:
             materialLabel[p] = 2
+            initialPhaseChangePosition[p] = particlePosition[p]
             # model.mu[p] = model.mu[p]*0.01
             # model.lam[p] = model.lam[p]*0.01
         if yield_stress[p] <= 0:

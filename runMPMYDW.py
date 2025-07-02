@@ -73,7 +73,7 @@ E=np.full(nPoints, E, dtype=np.float32) #youngs modulus per point
 nu=0.3 #poisson ratio
 nu=np.full(nPoints, nu, dtype=np.float32) #poisson ratio per point
 
-ys=1e5 #yield stress
+ys=7e6 #yield stress
 ys=np.full(nPoints, ys, dtype=np.float32) #yield stress per point
 
 # custom parameters associated with the constitutive model
@@ -129,6 +129,7 @@ softening = wp.array(softening, dtype=wp.float32, device=device)
 
 # dynamic material point parameters
 particle_x= wp.array(x, dtype=wp.vec3)  # current position
+particle_x_initial = wp.zeros(shape=nPoints, dtype=wp.vec3)   # initial particle position
 particle_vol = wp.array(particle_volume, dtype=float)  # particle volume
 particle_mass = wp.zeros(shape=nPoints, dtype=float)  # particle volume
 wp.launch(kernel=mpmRoutines.get_float_array_product, 
@@ -168,6 +169,8 @@ boundFriction = 0.0 # friction coefficient for the bounding box velocity boundar
 
 
 # xpbd parameters 
+particle_x_initial_xpbd = wp.zeros(shape=nPoints, dtype=wp.vec3)   # initial particle position upon phase change to xpbd
+particle_x_initial_xpbd.fill_([1e6, 1e6, 1e6])
 particle_x_integrated = wp.zeros(shape=nPoints, dtype=wp.vec3)   #  position to iterate on
 particle_v_integrated = wp.zeros(shape=nPoints, dtype=wp.vec3)  # velocity to iterate on
 particle_x_deltaInt = wp.zeros(shape=nPoints, dtype=wp.vec3)   #  position to iterate on
@@ -183,8 +186,16 @@ xpbd_iterations = 4
 particle_cohesion=0.0
 sleepThreshold=0.5
 
-max_radius = np.max(particle_radius.numpy())
-particle_v_max = np.inf
+swellingRatio=0.2
+swellingActivationFactor=5
+swellingMaxFactor=20
+particleBaseRadius=particle_radius.numpy()
+particleMaxRadius=particleBaseRadius*(1+swellingRatio)**(1/3)
+particleBaseRadius=wp.array(particleBaseRadius)
+particleMaxRadius=wp.array(particleMaxRadius)
+
+particle_v_max = 10.0#np.inf
+max_radius = np.max(particleMaxRadius.numpy())
 minBoundsXPBD = wp.vec3(minBounds[0]+3*dx, minBounds[1]+3*dx, minBounds[2]+3*dx)  # minimum bounds of the grid
 maxBoundsXPBD = wp.vec3(maxBounds[0]-3*dx, maxBounds[1]-3*dx, maxBounds[2]-3*dx) 
 # xpbdParticleCount = np.sum(materialLabel.numpy() == 2) # count of xpbd particles, i.e. particles with material label 2
@@ -241,6 +252,8 @@ for step in range(nSteps):
             dim = nPoints, 
             inputs = [activeLabel,
                         materialLabel, 
+                        particle_x,
+                        particle_x_initial_xpbd,
                         particle_F,
                         particle_F_trial,
                         mu,
@@ -446,6 +459,22 @@ for step in range(nSteps):
         particle_x.assign(particle_x_integrated)
         particle_v.assign(particle_v_integrated)
 
+        # swell particles here
+        if swellingRatio > 0:
+            # print('type2')
+            
+            wp.launch(kernel=xpbdRoutines.swellParticlesType2, 
+                    dim=nPoints, 
+                    inputs=[activeLabel,
+                            materialLabel,
+                            particle_x_initial_xpbd, 
+                            particle_x, 
+                            particle_radius, 
+                            swellingActivationFactor, 
+                            swellingMaxFactor, 
+                            particleMaxRadius, 
+                            particleBaseRadius], 
+                    device=device)
 
     t=t+dt
     counter=counter+1
@@ -454,7 +483,9 @@ for step in range(nSteps):
         if render:
             renderer.begin_frame()
             # colors=fs5PlotUtils.values_to_rgb(np.arange(0,nPoints,1),min_val=0, max_val=nPoints)
-            colors=fs5PlotUtils.values_to_rgb(ys.numpy(),min_val=0.0, max_val=ys.numpy().max())
+            # colors=fs5PlotUtils.values_to_rgb(ys.numpy(),min_val=0.0, max_val=ys.numpy().max())
+            colors=fs5PlotUtils.values_to_rgb(particle_radius.numpy(),min_val=particleBaseRadius.numpy().min(), max_val=particleMaxRadius.numpy().max())
+
             # colors=fs5PlotUtils.values_to_rgb(particle_v.numpy()[:,2],min_val=particle_v.numpy()[:,2].min(), max_val=particle_v.numpy()[:,2].max())
 
             # x=particle_stress.numpy()

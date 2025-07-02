@@ -228,3 +228,28 @@ def sleepParticles(
 
             if wp.length(particle_positions_after[tid]-particle_positions_init[tid])/dt<sleepThreshold*radius[tid]:
                 particle_positions_after[tid]=particle_positions_init[tid]
+
+            
+@wp.kernel # type 2 swelling simply increments radius based on incremental distance and later, number of neighbours
+def swellParticlesType2(
+    activeLabel: wp.array(dtype=wp.int32),
+    materialLabel: wp.array(dtype=wp.int32),
+    particle_initial_position: wp.array(dtype=wp.vec3),
+    particle_position: wp.array(dtype=wp.vec3),
+    particle_radius: wp.array(dtype=float),
+    factor: float,
+    factor_max: float,
+    swellRadius: wp.array(dtype=float),
+    baseRadius: wp.array(dtype=float),
+):
+    tid = wp.tid()
+    if activeLabel[tid]==1:
+        if materialLabel[tid] == 2:    # type 2 swelling operates on active, non dump particles (label 0 only, since -1 is inactive, 1, 2, and 5 are v1 swelling, 3 is inactive drawn, 4 is dump)
+            dx=wp.length(particle_position[tid]-particle_initial_position[tid])*baseRadius[tid]
+            factor=factor*baseRadius[tid]
+            factor_max=factor_max*baseRadius[tid]
+            
+            if dx>factor:# and dx<factor_max:
+                newRad=baseRadius[tid]+(swellRadius[tid]-baseRadius[tid])*(dx-factor)/(factor_max-factor)
+                newRad=wp.min(wp.max(newRad,particle_radius[tid]),swellRadius[tid])
+                particle_radius[tid]=newRad
