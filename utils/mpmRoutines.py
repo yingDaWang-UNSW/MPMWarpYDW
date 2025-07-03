@@ -28,7 +28,9 @@ def compute_stress_from_F_trial(
     activeLabel: wp.array(dtype=wp.int32),
     materialLabel: wp.array(dtype=wp.int32),
     particlePosition: wp.array(dtype=wp.vec3),
+    particleVelocity: wp.array(dtype=wp.vec3),
     initialPhaseChangePosition: wp.array(dtype=wp.vec3),
+    initialPhaseChangeVelocity: wp.array(dtype=wp.vec3),
     particle_F: wp.array(dtype=wp.mat33),
     particle_F_trial: wp.array(dtype=wp.mat33),
     mu:  wp.array(dtype=float),
@@ -37,6 +39,9 @@ def compute_stress_from_F_trial(
     hardening: wp.array(dtype=wp.int32),
     xi:  wp.array(dtype=float),
     softening: wp.array(dtype=float),
+    particle_density: wp.array(dtype=float),
+    yMod: wp.array(dtype=float),
+    efficiency: float,
     particle_stress: wp.array(dtype=wp.mat33), 
 ):
     p = wp.tid()
@@ -46,7 +51,9 @@ def compute_stress_from_F_trial(
             particle_F[p] = von_mises_return_mapping_with_damage_YDW(
                 particle_F_trial[p], 
                 particlePosition,
+                particleVelocity,
                 initialPhaseChangePosition,
+                initialPhaseChangeVelocity,
                 materialLabel,
                 mu,
                 lam,
@@ -54,6 +61,9 @@ def compute_stress_from_F_trial(
                 hardening,
                 xi,
                 softening, 
+                particle_density,
+                yMod,
+                efficiency,
                 p
             )
 
@@ -74,7 +84,9 @@ def compute_stress_from_F_trial(
 def von_mises_return_mapping_with_damage_YDW(
     F_trial: wp.mat33, 
     particlePosition: wp.array(dtype=wp.vec3),
+    particleVelocity: wp.array(dtype=wp.vec3),
     initialPhaseChangePosition: wp.array(dtype=wp.vec3),
+    initialPhaseChangeVelocity: wp.array(dtype=wp.vec3),
     materialLabel: wp.array(dtype=wp.int32),
     mu:  wp.array(dtype=float),
     lam:  wp.array(dtype=float),
@@ -82,6 +94,9 @@ def von_mises_return_mapping_with_damage_YDW(
     hardening: wp.array(dtype=wp.int32),
     xi:  wp.array(dtype=float),
     softening: wp.array(dtype=float),
+    density: wp.array(dtype=float),
+    youngs_modulus: wp.array(dtype=float),
+    efficiency: float,
     p: int
 ):
     U = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
@@ -106,8 +121,18 @@ def von_mises_return_mapping_with_damage_YDW(
         if wp.length(cond) > yield_stress[p]*1.25:
             materialLabel[p] = 2
             initialPhaseChangePosition[p] = particlePosition[p]
-            # model.mu[p] = model.mu[p]*0.01
-            # model.lam[p] = model.lam[p]*0.01
+            # estimate the velocity from energy release
+            # Convert deviatoric stress magnitude to velocity via elastic energy estimate
+            sigma_vm = wp.length(cond)  # von Mises-like
+            rho = density[p]
+            E = youngs_modulus[p]
+            v_expected = wp.sqrt(efficiency * sigma_vm * sigma_vm / (rho * E))
+
+            # Add in the direction of current motion
+            v_dir = wp.normalize(particleVelocity[p] + wp.vec3(1e-12))  # avoid divide by zero
+            particleVelocity[p] = particleVelocity[p] + v_expected * v_dir
+            initialPhaseChangeVelocity[p] = particleVelocity[p]
+
         if yield_stress[p] <= 0:
             return F_trial
         epsilon_hat = epsilon - wp.vec3(temp, temp, temp)

@@ -212,22 +212,42 @@ def my_apply_particle_deltas(
             x_out[tid] = x_new
             v_out[tid] = v_new
 
+# TODO: in fs5, velocities arent zeroed on sleeping particles. in FS6, jury is still out.
 @wp.kernel
 def sleepParticles(
     activeLabel: wp.array(dtype=wp.int32),
     materialLabel: wp.array(dtype=wp.int32),
     sleepThreshold: float,
     radius: wp.array(dtype=float),
-    particle_positions_init: wp.array(dtype=wp.vec3),
+    particle_positions_prev: wp.array(dtype=wp.vec3),
     particle_positions_after: wp.array(dtype=wp.vec3),
+    particle_distance_total: wp.array(dtype=float),
     dt: float,
 ):
     tid = wp.tid()
     if activeLabel[tid]==1:
         if materialLabel[tid] == 2:
+            d=wp.length(particle_positions_after[tid]-particle_positions_prev[tid])
+            if d/dt<sleepThreshold*radius[tid]:
+                particle_positions_after[tid]=particle_positions_prev[tid]
+            particle_distance_total[tid]=particle_distance_total[tid]+d
 
-            if wp.length(particle_positions_after[tid]-particle_positions_init[tid])/dt<sleepThreshold*radius[tid]:
-                particle_positions_after[tid]=particle_positions_init[tid]
+@wp.kernel
+def clipParticleVelocitiesOnPhaseChange(
+    activeLabel: wp.array(dtype=wp.int32),
+    materialLabel: wp.array(dtype=wp.int32),
+    particle_distance_total: wp.array(dtype=float),
+    particleInitialXPBDVelocity: wp.array(dtype=wp.vec3),
+    particle_v: wp.array(dtype=wp.vec3),
+    radius: wp.array(dtype=float),
+):
+    tid = wp.tid()
+    if activeLabel[tid]==1:
+        if materialLabel[tid] == 2:
+            # if total distance from genertion less than 2 particles, clip
+            if particle_distance_total[tid]<radius[tid]*4.0:
+                if wp.length(particle_v[tid])>wp.length(particleInitialXPBDVelocity[tid]):
+                    particle_v[tid] = particleInitialXPBDVelocity[tid]
 
             
 @wp.kernel # type 2 swelling simply increments radius based on incremental distance and later, number of neighbours
