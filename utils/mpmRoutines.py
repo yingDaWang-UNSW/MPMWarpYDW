@@ -122,12 +122,19 @@ def von_mises_return_mapping_with_damage_YDW(
             materialLabel[p] = 2
             initialPhaseChangePosition[p] = particlePosition[p]
             # estimate the velocity from energy release
-            # Convert deviatoric stress magnitude to velocity via elastic energy estimate
-            sigma_vm = wp.length(cond)  # von Mises-like
+            # Convert deviatoric stress magnitude to velocity via elastic energy estimate #TODO: this can be computed from components directly rather than estimated
             rho = density[p]
-            E = youngs_modulus[p]
-            v_expected = wp.sqrt(efficiency * sigma_vm * sigma_vm / (rho * E))
 
+            # sigma_vm = wp.length(cond)  # von Mises-like
+            # E = youngs_modulus[p]
+            # v_expected = wp.sqrt(efficiency * sigma_vm * sigma_vm / (rho * E))
+
+            # Compute elastic strain energy density: u = 0.5 * sigma : epsilon
+            u = 0.5 * (tau[0]*epsilon[0] + tau[1]*epsilon[1] + tau[2]*epsilon[2])
+
+            # Energy-to-velocity conversion
+            v_expected = wp.sqrt(2.0 * efficiency * u / rho)
+            
             # Add in the direction of current motion
             v_dir = wp.normalize(particleVelocity[p] + wp.vec3(1e-12))  # avoid divide by zero
             particleVelocity[p] = particleVelocity[p] + v_expected * v_dir

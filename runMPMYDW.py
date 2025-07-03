@@ -74,7 +74,7 @@ E=np.full(nPoints, E, dtype=np.float32) #youngs modulus per point
 nu=0.3 #poisson ratio
 nu=np.full(nPoints, nu, dtype=np.float32) #poisson ratio per point
 
-ys=2e6 #yield stress
+ys=1e6 #yield stress
 ys=np.full(nPoints, ys, dtype=np.float32) #yield stress per point
 
 # custom parameters associated with the constitutive model
@@ -85,7 +85,7 @@ hardening=np.full(nPoints, hardening, dtype=np.int32) #
 xi=10
 xi=np.full(nPoints, xi, dtype=np.float32) #
 
-softening=1e6
+softening=0
 softening=np.full(nPoints, softening, dtype=np.float32) #
 
 # other parameters
@@ -193,7 +193,7 @@ xpbd_iterations = 4
 particle_cohesion=0.0
 sleepThreshold=0.5
 
-swellingRatio=0.15
+swellingRatio=0.0
 swellingActivationFactor=5
 swellingMaxFactor=20
 particleBaseRadius=particle_radius.numpy()
@@ -236,7 +236,7 @@ if render:
     renderer._camera_speed = 0.5
     # orient the renderer to look at the centroid of the particles
     renderer=fs5PlotUtils.look_at_centroid(x,renderer,renderer.camera_fov)
-
+    maxStress=0.0
 
 t=0
 counter=0
@@ -510,7 +510,7 @@ for step in range(nSteps):
             # colors=fs5PlotUtils.values_to_rgb(ys.numpy(),min_val=0.0, max_val=ys.numpy().max())
             # colors=fs5PlotUtils.values_to_rgb(particle_radius.numpy(),min_val=particleBaseRadius.numpy().min(), max_val=particleMaxRadius.numpy().max())
 
-            colors=fs5PlotUtils.values_to_rgb(particle_v.numpy()[:,2],min_val=particle_v.numpy()[:,2].min(), max_val=particle_v.numpy()[:,2].max())
+            # colors=fs5PlotUtils.values_to_rgb(particle_v.numpy()[:,2],min_val=particle_v.numpy()[:,2].min(), max_val=particle_v.numpy()[:,2].max())
 
             x=particle_stress.numpy()
             # x is your (N, 3, 3) array of stress tensors
@@ -525,8 +525,8 @@ for step in range(nSteps):
 
             # Compute von Mises stress
             von_mises = np.sqrt(1.5 * np.sum(s**2, axis=(1, 2)))  # shape (N,)
-
-            colors=fs5PlotUtils.values_to_rgb(von_mises,min_val=np.min(von_mises), max_val=np.max(von_mises)+1)
+            maxStress=np.max([np.max(von_mises),maxStress])
+            colors=fs5PlotUtils.values_to_rgb(von_mises,min_val=0.0, max_val=maxStress)
 
             renderer.render_points(points=particle_x, name="points", radius=particle_radius.numpy(), colors=colors, dynamic=True)
             # renderer.render_box(name='simBounds',pos=[grid_lim/2,grid_lim/2,grid_lim/2],extents=[grid_lim/2,grid_lim/2,grid_lim/2],rot=[0,0,0,1])
