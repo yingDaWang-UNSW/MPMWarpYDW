@@ -1887,11 +1887,15 @@ Instances: {len(self._instances)}"""
             self._pitch += dy
 
             self._pitch = max(min(self._pitch, 89.0), -89.0)
+            from pyglet.math import Vec3
 
-            self._camera_front.x = np.cos(np.deg2rad(self._yaw)) * np.cos(np.deg2rad(self._pitch))
-            self._camera_front.y = np.sin(np.deg2rad(self._pitch))
-            self._camera_front.z = np.sin(np.deg2rad(self._yaw)) * np.cos(np.deg2rad(self._pitch))
-            self._camera_front = self._camera_front.normalize()
+            front = Vec3(
+                np.cos(np.deg2rad(self._yaw)) * np.cos(np.deg2rad(self._pitch)),
+                np.sin(np.deg2rad(self._pitch)),
+                np.sin(np.deg2rad(self._yaw)) * np.cos(np.deg2rad(self._pitch))
+            )
+            self._camera_front = front.normalize()
+
             self.update_view_matrix()
 
     def _scroll_callback(self, x, y, scroll_x, scroll_y):

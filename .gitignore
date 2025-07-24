@@ -7,3 +7,4 @@ utils/__pycache__*
 output/*
 *pyc
 *.mp4
+.vscode*

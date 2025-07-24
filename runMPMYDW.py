@@ -9,207 +9,172 @@ device = "cuda:0"
 from utils import fs5PlotUtils
 from utils import fs5RendererCore
 from utils import mpmRoutines
-from utils import xpbdRoutines
+from utils import simulationRoutines
 import numpy as np
 np.seterr(over='raise')
+from utils.getArgs import get_args
+args = get_args()
 
-# simulation parameters
-dt = 1e-3 #time step in seconds 
-dtxpbd = 1e-2 #time step for xpbd in seconds
-mpmStepsPerXpbdStep = int(dtxpbd/dt) #number of mpm steps per xpbd step
-nSteps = 2500000 #number of simulation steps
+# Example usage:
+dt = args.dt
+dtxpbd = args.dtxpbd
+mpmStepsPerXpbdStep = int(dtxpbd / dt)
+nSteps = args.nSteps
 
-rpic_damping = 0.0 #damping factor for the particle to grid transfer, 0.0 means no damping
-grid_v_damping_scale = 1.1 #damping factor for the grid velocity, 1.0 or higher means no damping
-update_cov = True #whether to update the covariance matrix during the grid to particle transfer
+print(f"Running simulation with dt={dt}, dtxpbd={dtxpbd}, nSteps={nSteps}")
 
-render = True #whether to render the simulation
-saveFlag = True
-#LOAD THE DATA AND INFER THE GRID##############################################################################################################
+# --- Simulation parameters ---
+dt = args.dt
+dtxpbd = args.dtxpbd
+mpmStepsPerXpbdStep = int(dtxpbd / dt)
+nSteps = args.nSteps
 
-domainFile="./exampleDomains/annular_arch_particles.h5"
+rpic_damping = args.rpic_damping
+grid_v_damping_scale = args.grid_v_damping_scale
+update_cov = args.update_cov
+
+render = args.render
+saveFlag = args.saveFlag
+
+# --- Domain & grid ---
+domainFile = args.domainFile
 h5file = h5py.File(domainFile, "r")
 x, particle_volume = h5file["x"], h5file["particle_volume"]
-x=np.array(x).T
-# x=x+np.random.rand(x.shape[0], x.shape[1]) # add some noise to the particle positions
-
-nPoints= x.shape[0]
+x = np.array(x).T
+x = x + np.random.rand(x.shape[0], x.shape[1])  # jitter to prevent stress chains
+nPoints = x.shape[0]
 print(f"Number of particles: {nPoints}")
 
-# infer the grid parameters from the particle positions
-minBounds=np.min(x,0)-[25, 25, 25]
-maxBounds=np.max(x,0)+[25, 25, 25]
-
-particleDiameter = np.mean(particle_volume)**0.33
-
-# Compute grid spacing (assume cubic)
-dx = particleDiameter*2
-invdx= 1.0 / dx
-
-# Compute number of cells in each dimension (ensure int)
+minBounds = np.min(x, 0) - args.grid_padding
+maxBounds = np.max(x, 0) + args.grid_padding
+particleDiameter = np.mean(particle_volume) ** 0.33
+dx = particleDiameter * args.grid_particle_spacing_scale
+invdx = 1.0 / dx
 gridDims = np.ceil((maxBounds - minBounds) / dx).astype(int)
-
 print(f'GRID: {gridDims}')
 
-# Compute grid centroids
-x_vals = np.linspace(minBounds[0] + 0.5*dx, maxBounds[0] - 0.5*dx, gridDims[0])
-y_vals = np.linspace(minBounds[1] + 0.5*dx, maxBounds[1] - 0.5*dx, gridDims[1])
-z_vals = np.linspace(minBounds[2] + 0.5*dx, maxBounds[2] - 0.5*dx, gridDims[2])
-
+x_vals = np.linspace(minBounds[0] + 0.5 * dx, maxBounds[0] - 0.5 * dx, gridDims[0])
+y_vals = np.linspace(minBounds[1] + 0.5 * dx, maxBounds[1] - 0.5 * dx, gridDims[1])
+z_vals = np.linspace(minBounds[2] + 0.5 * dx, maxBounds[2] - 0.5 * dx, gridDims[2])
 X, Y, Z = np.meshgrid(x_vals, y_vals, z_vals, indexing='ij')
 centroids = np.vstack((X.ravel(), Y.ravel(), Z.ravel())).T
-
 print(f"Total grid centroids: {centroids.shape[0]}")
 
-#PARAMETERS###############################################################################################################################
+# --- Material properties ---
+density = np.full(nPoints, args.density, dtype=np.float32)
+E = np.full(nPoints, args.E, dtype=np.float32)
+nu = np.full(nPoints, args.nu, dtype=np.float32)
+ys = np.full(nPoints, args.ys, dtype=np.float32)
+hardening = np.full(nPoints, args.hardening, dtype=np.int32)
+xi = np.full(nPoints, args.xi, dtype=np.float32)
+softening = np.full(nPoints, args.softening, dtype=np.float32)
+eta_shear = np.full(nPoints, args.eta_shear, dtype=np.float32)
+eta_bulk = np.full(nPoints, args.eta_bulk, dtype=np.float32)
 
-# point properties from CPU/file
+materialLabel = np.ones(nPoints, dtype=np.int32)
+activeLabel = np.ones(nPoints, dtype=np.int32)
 
-density = 3000.0 #density of the material
-density = np.full(nPoints, density, dtype=np.float32) #density per point
+# --- Gravity & boundary ---
+gravity = wp.vec3(0.0, 0.0, args.gravity)
+boundFriction = args.boundFriction
+eff = args.eff
 
-E=1e8 #youngs modulus
-E=np.full(nPoints, E, dtype=np.float32) #youngs modulus per point
-
-nu=0.3 #poisson ratio
-nu=np.full(nPoints, nu, dtype=np.float32) #poisson ratio per point
-
-ys=1e6 #yield stress
-ys=np.full(nPoints, ys, dtype=np.float32) #yield stress per point
-
-# custom parameters associated with the constitutive model
-
-hardening=0
-hardening=np.full(nPoints, hardening, dtype=np.int32) # 
-
-xi=10
-xi=np.full(nPoints, xi, dtype=np.float32) #
-
-softening=0
-softening=np.full(nPoints, softening, dtype=np.float32) #
-
-# other parameters
-materialLabel = np.ones(nPoints, dtype=np.int32) #material label per point. 1 = solid, 2 = particle, etc
-activeLabel = np.ones(nPoints, dtype=np.int32) #activity label per point. 1 = on, 0 = off, or other. activity and mertial is separated to allow for different materials to be active or inactive at different times
-
-gravity = -9.81 #gravity in m/s^2, negative value for downward direction
-
-# GPU arrays
+# --- Transfer to GPU ---
 yMod = wp.array(E, dtype=wp.float32, device=device)
 poissonRatio = wp.array(nu, dtype=wp.float32, device=device)
 mu = wp.zeros(nPoints, dtype=wp.float32, device=device)
 lam = wp.zeros(nPoints, dtype=wp.float32, device=device)
 bulk = wp.zeros(nPoints, dtype=wp.float32, device=device)
-
-wp.launch(kernel = mpmRoutines.compute_mu_lam_bulk_from_E_nu, 
-          dim = nPoints, 
-          inputs = [yMod, 
-                    poissonRatio], 
-          outputs=[mu,
-                   lam,
-                   bulk], 
+wp.launch(kernel=mpmRoutines.compute_mu_lam_bulk_from_E_nu,
+          dim=nPoints,
+          inputs=[yMod, poissonRatio],
+          outputs=[mu, lam, bulk],
           device=device)
 
-ys = wp.array(ys, dtype=wp.float32, device=device) #yield stress per point
-
+ys = wp.array(ys, dtype=wp.float32, device=device)
 materialLabel = wp.array(materialLabel, dtype=wp.int32, device=device)
 activeLabel = wp.array(activeLabel, dtype=wp.int32, device=device)
-
-# mpmParticleCount = np.sum(materialLabel.numpy() == 1) 
-
-
-gravity = wp.vec3(0.0, 0.0, gravity) #gravity vector
-
 particle_density = wp.array(density, dtype=wp.float32, device=device)
-
 hardening = wp.array(hardening, dtype=wp.int32, device=device)
 xi = wp.array(xi, dtype=wp.float32, device=device)
 softening = wp.array(softening, dtype=wp.float32, device=device)
+eta_shear = wp.array(eta_shear, dtype=wp.float32, device=device)
+eta_bulk = wp.array(eta_bulk, dtype=wp.float32, device=device)
 
-
-
-# dynamic material point parameters
-particle_x= wp.array(x, dtype=wp.vec3)  # current position
-particle_x_initial = wp.zeros(shape=nPoints, dtype=wp.vec3)   # initial particle position
-particle_vol = wp.array(particle_volume, dtype=float)  # particle volume
-particle_mass = wp.zeros(shape=nPoints, dtype=float)  # particle volume
-wp.launch(kernel=mpmRoutines.get_float_array_product, 
-          dim=nPoints, 
-          inputs=[particle_density,
-                  particle_vol,
-                  particle_mass], 
+# --- Dynamic material point parameters ---
+particle_x = wp.array(x, dtype=wp.vec3)
+particle_x_initial = wp.zeros(shape=nPoints, dtype=wp.vec3)
+particle_vol = wp.array(particle_volume, dtype=float)
+particle_mass = wp.zeros(shape=nPoints, dtype=float)
+wp.launch(kernel=mpmRoutines.get_float_array_product,
+          dim=nPoints,
+          inputs=[particle_density, particle_vol, particle_mass],
           device=device)
 
-particle_v= wp.zeros(shape=nPoints,dtype=wp.vec3)  # current velocity
-particle_F= wp.zeros(shape=nPoints,dtype=wp.mat33)  # particle elastic deformation gradient
-particle_F_trial= wp.zeros(shape=nPoints,dtype=wp.mat33)  # particle elastic deformation gradient
+particle_v = wp.zeros(shape=nPoints, dtype=wp.vec3)
+particle_F = wp.zeros(shape=nPoints, dtype=wp.mat33)
+particle_F_trial = wp.zeros(shape=nPoints, dtype=wp.mat33)
+wp.launch(kernel=mpmRoutines.set_mat33_to_identity,
+          dim=nPoints,
+          inputs=[particle_F_trial],
+          device=device)
 
-# initial deformation gradient is set to identity
-wp.launch(
-    kernel=mpmRoutines.set_mat33_to_identity,
-    dim=nPoints,
-    inputs=[particle_F_trial],
-    device=device,
-)
+particle_stress = wp.zeros(shape=nPoints, dtype=wp.mat33)
+particle_C = wp.zeros(shape=nPoints, dtype=wp.mat33)
+particle_init_cov = wp.zeros(shape=nPoints * 6, dtype=float, device=device)
+particle_cov = wp.zeros(shape=nPoints * 6, dtype=float, device=device)
+particle_radius = wp.array(particle_vol.numpy() ** (1 / 3) * np.pi / 6)
 
-particle_stress= wp.zeros(shape=nPoints,dtype=wp.mat33)  # particle elastic deformation gradient
-particle_C = wp.zeros(shape=nPoints, dtype=wp.mat33) # particle elastic right Cauchy-Green deformation tensor
-particle_init_cov = wp.zeros(shape=nPoints * 6, dtype=float, device=device)  # initial covariance matrix
-particle_cov = wp.zeros(shape=nPoints * 6, dtype=float, device=device)  
-particle_radius=wp.array(particle_vol.numpy()**.33*np.pi/6) # particle radius, assuming spherical particles
+# --- Grid arrays ---
+grid_m = wp.zeros(shape=gridDims, dtype=float, device=device)
+grid_v_in = wp.zeros(shape=gridDims, dtype=wp.vec3, device=device)
+grid_v_out = wp.zeros(shape=gridDims, dtype=wp.vec3, device=device)
+minBounds = wp.vec3(*minBounds)
+maxBounds = wp.vec3(*maxBounds)
 
-# grid parameters- mass, velocities, etc.
-
-grid_m = wp.zeros(shape=gridDims, dtype=float, device=device,) # grid mass from particles
-grid_v_in = wp.zeros(shape=gridDims, dtype=wp.vec3, device=device,) # grsid momentum from particles
-grid_v_out = wp.zeros(shape=gridDims, dtype=wp.vec3, device=device,) # grid velocity to particles
-minBounds = wp.vec3(minBounds[0], minBounds[1], minBounds[2])  # minimum bounds of the grid
-maxBounds = wp.vec3(maxBounds[0], maxBounds[1], maxBounds[2]) 
-
-boundFriction = 0.0 # friction coefficient for the bounding box velocity boundary condition
-
-
-# conversion params
-eff = 0.05
-
-# xpbd parameters 
-particle_x_initial_xpbd = wp.zeros(shape=nPoints, dtype=wp.vec3)   # initial particle position upon phase change to xpbd
+# --- XPBD parameters ---
+particle_x_initial_xpbd = wp.zeros(shape=nPoints, dtype=wp.vec3)
 particle_x_initial_xpbd.fill_([1e6, 1e6, 1e6])
-particle_v_initial_xpbd = wp.zeros(shape=nPoints, dtype=wp.vec3)   # initial particle position upon phase change to xpbd
-particle_cumDist_xpbd = wp.zeros(shape=nPoints, dtype=float)   # initial particle position upon phase change to xpbd
-
-particle_x_integrated = wp.zeros(shape=nPoints, dtype=wp.vec3)   #  position to iterate on
-particle_v_integrated = wp.zeros(shape=nPoints, dtype=wp.vec3)  # velocity to iterate on
-particle_x_deltaInt = wp.zeros(shape=nPoints, dtype=wp.vec3)   #  position to iterate on
-particle_v_deltaInt = wp.zeros(shape=nPoints, dtype=wp.vec3)  # velocity to iterate on
-particle_delta = wp.zeros(shape=nPoints, dtype=wp.vec3)  # delta to iterate on
+particle_v_initial_xpbd = wp.zeros(shape=nPoints, dtype=wp.vec3)
+particle_cumDist_xpbd = wp.zeros(shape=nPoints, dtype=float)
+particle_x_integrated = wp.zeros(shape=nPoints, dtype=wp.vec3)
+particle_v_integrated = wp.zeros(shape=nPoints, dtype=wp.vec3)
+particle_x_deltaInt = wp.zeros(shape=nPoints, dtype=wp.vec3)
+particle_v_deltaInt = wp.zeros(shape=nPoints, dtype=wp.vec3)
+particle_delta = wp.zeros(shape=nPoints, dtype=wp.vec3)
 particle_grid = wp.HashGrid(128, 128, 128)
 
-xpbd_relaxation = 1.0  # relaxation factor for xpbd
-dynamicParticleFriction = 0.05  # dynamic friction for xpbd
-staticVelocityThreshold = 1e-5  # threshold for static ground velocity
-staticParticleFriction = 0.1  # static friction for xpbd
-xpbd_iterations = 4
-particle_cohesion=0.0
-sleepThreshold=0.5
+xpbd_relaxation = args.xpbd_relaxation
+dynamicParticleFriction = args.dynamicParticleFriction
+staticVelocityThreshold = args.staticVelocityThreshold
+staticParticleFriction = args.staticParticleFriction
+xpbd_iterations = args.xpbd_iterations
+particle_cohesion = args.particle_cohesion
+sleepThreshold = args.sleepThreshold
 
-swellingRatio=0.0
-swellingActivationFactor=5
-swellingMaxFactor=20
-particleBaseRadius=particle_radius.numpy()
-particleMaxRadius=particleBaseRadius*(1+swellingRatio)**(1/3)
-particleBaseRadius=wp.array(particleBaseRadius)
-particleMaxRadius=wp.array(particleMaxRadius)
+# --- Swelling ---
+swellingRatio = args.swellingRatio
+swellingActivationFactor = args.swellingActivationFactor
+swellingMaxFactor = args.swellingMaxFactor
+particleBaseRadius = particle_radius.numpy()
+particleMaxRadius = particleBaseRadius * (1 + swellingRatio) ** (1 / 3)
+particleBaseRadius = wp.array(particleBaseRadius)
+particleMaxRadius = wp.array(particleMaxRadius)
 
-particle_v_max = 1000.0#np.inf
+# --- Velocity limits & bounds ---
+particle_v_max = args.particle_v_max
 max_radius = np.max(particleMaxRadius.numpy())
-minBoundsXPBD = wp.vec3(minBounds[0]+3*dx, minBounds[1]+3*dx, minBounds[2]+3*dx)  # minimum bounds of the grid
-maxBoundsXPBD = wp.vec3(maxBounds[0]-3*dx, maxBounds[1]-3*dx, maxBounds[2]-3*dx) 
+minBoundsXPBD = wp.vec3(minBounds[0] + 3 * dx, minBounds[1] + 3 * dx, minBounds[2] + 3 * dx)
+maxBoundsXPBD = wp.vec3(maxBounds[0] - 3 * dx, maxBounds[1] - 3 * dx, maxBounds[2] - 3 * dx)
+
+
 # xpbdParticleCount = np.sum(materialLabel.numpy() == 2) # count of xpbd particles, i.e. particles with material label 2
 #BOUNDARY CONDITIONS (DO THIS LATER)###############################################################################################################################
 
-startBounds=0.0
-endBounds=1e6
+residual = wp.array([1e10], dtype=float, device=device)  # residual for velocity convergence
+numActiveParticles = wp.array([0], dtype=wp.int32, device=device)  # number of active particles
+residualCPU = 1e10  # CPU residual for velocity convergence, initialized to a large value
+
 
 if render:
     # initialise renderer
@@ -240,270 +205,124 @@ if render:
 
 t=0
 counter=0
+startTime=time.time()
 for step in range(nSteps):
-
+    stepStartTime = time.time()
+    residual.zero_()  # reset residual at each step
+    numActiveParticles.zero_()  # reset active particle count at each step
     # perform the mpm simulation step
-    # if mpmParticleCount>0:
-    # print(f'MPM step {step+1}/{nSteps}, time: {t:.4f}s, counter: {counter}')
-
-    # zero the grids
-    grid_m.zero_()
-    grid_v_in.zero_()
-    grid_v_out.zero_()
-
-    # apply boundary and external conditions on points
-
-
-    # compute stress per point from deformation gradient on the mpm particle points
-    wp.launch(kernel = mpmRoutines.compute_stress_from_F_trial, 
-            dim = nPoints, 
-            inputs = [activeLabel,
-                        materialLabel, 
-                        particle_x,
-                        particle_v,
-                        particle_x_initial_xpbd,
-                        particle_v_initial_xpbd,
-                        particle_F,
-                        particle_F_trial,
-                        mu,
-                        lam,
-                        ys,
-                        hardening,
-                        xi,
-                        softening,
-                        particle_density,
-                        yMod,
-                        eff,
-                        particle_stress],
-            device=device)
-
-    # perform particle to grid transfer for all particles
-    wp.launch(
-        kernel=mpmRoutines.p2g_apic_with_stress,
-        dim=nPoints,
-        inputs=[activeLabel,
-                materialLabel, 
-                particle_stress,
-                particle_x,
-                particle_v,
-                particle_C,
-                particle_vol,
-                particle_mass,
-                dx,
-                invdx,
-                minBounds,
-                rpic_damping,
-                grid_m,
-                grid_v_in,
-                dt],
-        device=device,
-    )  
-
-    # apply external forces and damping on the grid
-    wp.launch(
-        kernel=mpmRoutines.grid_normalization_and_gravity,
-        dim=gridDims,
-        inputs=[grid_m,
-                grid_v_in,
-                grid_v_out,
-                gravity,
-                dt],
-        device=device,
+    simulationRoutines.mpmSimulationStep(
+        particle_x,
+        particle_v,
+        particle_x_initial_xpbd,
+        particle_v_initial_xpbd,
+        particle_F,
+        particle_F_trial,
+        particle_stress,
+        particle_C,
+        particle_vol,
+        particle_mass,
+        particle_density,
+        particle_cov,
+        activeLabel,
+        materialLabel,
+        mu,
+        lam,
+        ys,
+        hardening,
+        xi,
+        softening,
+        yMod,
+        eta_shear,
+        eta_bulk,
+        eff,
+        dx,
+        invdx,
+        minBounds,
+        rpic_damping,
+        dt,
+        gravity,
+        grid_m,
+        grid_v_in,
+        grid_v_out,
+        gridDims,
+        grid_v_damping_scale,
+        boundFriction,
+        update_cov,
+        nPoints,
+        device
     )
-    # print(f'Grid mass max: {grid_m.numpy().min()} - {grid_m.numpy().max()}, Grid velocity range: {grid_v_out.numpy().min()} - {grid_v_out.numpy().max()}')
-    if grid_v_damping_scale < 1.0:
-        wp.launch(
-            kernel=mpmRoutines.add_damping_via_grid,
-            dim=gridDims,
-            inputs=[grid_v_out,
-                    grid_v_damping_scale],
-            device=device,
-        )
-
-    # apply boundary conditions on the grid as required
-    # apply the bounding box velocity boundary condition on the grid
-    wp.launch(
-        kernel=mpmRoutines.collideBounds,
-        dim=gridDims,
-        inputs=[grid_v_out,
-                gridDims[0],
-                gridDims[1],
-                gridDims[2],
-                boundFriction],
-        device=device,
-    )
-    # perform grid to particle transfer on the mpm particle points only
-    wp.launch(
-        kernel=mpmRoutines.g2p,
-        dim=nPoints,
-        inputs=[dt,
-                activeLabel,
-                materialLabel,
-                particle_x,
-                particle_v,
-                particle_C,
-                particle_F,
-                particle_F_trial,
-                particle_cov,
-                invdx,
-                grid_v_out,
-                update_cov,
-                minBounds],
-        device=device,
-    )  # x, v, C, F_trial are updated
-
     # perform the xpbd step if timestep has reached the threshold
     if np.mod(counter, mpmStepsPerXpbdStep) == 0 and counter>0:
-        print(f'XPBD Step: {counter}, Time: {t}')
-
-        # wp.launch(
-        #         kernel=mpmRoutines.set_value_to_float_array,
-        #         dim=nPoints,
-        #         inputs=[particle_radius, max_radius],
-        #         device=device,
-        #     )
         
-        particle_grid.build(particle_x, dx)
-
-        # integrate the particles using xpbd with only gravity - impluse forces are handled elsewhere in conjunction with mpm particles
-        wp.copy(particle_x_integrated,particle_x)
-        wp.copy(particle_v_integrated,particle_v)
-        wp.launch(
-            kernel=xpbdRoutines.integrateParticlesXPBD,
-            dim=nPoints,
-            inputs=[
-                activeLabel,
-                materialLabel,
-                particle_x,
-                particle_v,
-                gravity,
-                dtxpbd,
-                particle_x_integrated,
-                particle_v_integrated,
-                particle_v_max
-            ],
-            device=device,
+        simulationRoutines.xpbdSimulationStep(
+            particle_grid,
+            particle_x,
+            particle_v,
+            particle_x_integrated,
+            particle_v_integrated,
+            particle_delta,
+            particle_v_deltaInt,
+            particle_x_deltaInt,
+            particle_mass,
+            particle_radius,
+            particle_cohesion,
+            particle_v_max,
+            particle_cumDist_xpbd,
+            particle_v_initial_xpbd,
+            particle_x_initial_xpbd,
+            particleMaxRadius,
+            particleBaseRadius,
+            activeLabel,
+            materialLabel,
+            gravity,
+            minBoundsXPBD,
+            maxBoundsXPBD,
+            dtxpbd,
+            xpbd_iterations,
+            xpbd_relaxation,
+            dynamicParticleFriction,
+            staticParticleFriction,
+            staticVelocityThreshold,
+            sleepThreshold,
+            swellingRatio,
+            swellingActivationFactor,
+            swellingMaxFactor,
+            max_radius,
+            nPoints,
+            dx,
+            device,
         )
-        # iterate xpbd contacts
-        for i in range(xpbd_iterations):
-            particle_delta.zero_()
 
-            wp.launch(
-                kernel=xpbdRoutines.my_solve_particle_bound_contacts,
-                dim=nPoints,
-                inputs=[
-                    activeLabel,
-                    materialLabel,
-                    particle_x_integrated,
-                    particle_v_integrated,
-                    particle_mass,
-                    particle_radius,
-                    dynamicParticleFriction,
-                    staticVelocityThreshold,
-                    staticParticleFriction,
-                    minBoundsXPBD,
-                    maxBoundsXPBD,
-                    dtxpbd,
-                    xpbd_relaxation,
-                ],
-                outputs=[particle_delta],
-                device=device,
-            )
-            wp.launch(
-                kernel=xpbdRoutines.my_solve_particle_particle_contacts,
-                dim=nPoints,
-                inputs=[
-                    activeLabel,
-                    materialLabel,
-                    particle_grid.id,
-                    particle_x_integrated,
-                    particle_v_integrated,
-                    particle_mass,
-                    particle_radius,
-                    dynamicParticleFriction,
-                    staticVelocityThreshold,
-                    staticParticleFriction,
-                    particle_cohesion,
-                    max_radius,
-                    dtxpbd,
-                    xpbd_relaxation,
-                ],
-                outputs=[particle_delta],
-                device=device
-            )
-            # print(f'Particle delta max: {particle_delta.numpy().max()}')
-            wp.copy(particle_v_deltaInt, particle_v_integrated)
-            wp.copy(particle_x_deltaInt, particle_x_integrated)
-            wp.launch(
-                kernel=xpbdRoutines.my_apply_particle_deltas,
-                dim=nPoints,
-                inputs=[
-                    activeLabel,
-                    materialLabel,
-                    particle_x,
-                    particle_x_integrated,
-                    particle_delta,
-                    dtxpbd,
-                    particle_v_max
-                ],
-                outputs=[
-                    particle_x_deltaInt,
-                    particle_v_deltaInt
-                ],
-                device=device,
-            )
-            wp.copy(particle_v_integrated, particle_v_deltaInt)
-            wp.copy(particle_x_integrated, particle_x_deltaInt)
+    wp.launch(
+        kernel=simulationRoutines.velocityConvergence,
+        dim=nPoints,
+        inputs=[
+            activeLabel,
+            materialLabel,
+            particle_v,
+            particle_radius,
+            residual
+        ],
+        device=device
+    )
 
-        # sleep particles here and compute path integral
-        wp.launch(kernel=xpbdRoutines.sleepParticles, 
-                    dim=nPoints, 
-                    inputs=[
-                        activeLabel,
-                        materialLabel,
-                        sleepThreshold,
-                        particle_radius,
-                        particle_x,
-                        particle_x_integrated,
-                        particle_cumDist_xpbd,
-                        dtxpbd], 
-                    device=device)
+    wp.launch(
+        kernel=simulationRoutines.countActiveParticles,
+        dim=nPoints,
+        inputs=[
+            activeLabel,
+            numActiveParticles
+        ],
+        device=device
+    )
 
-        particle_x.assign(particle_x_integrated)
-        particle_v.assign(particle_v_integrated)
-        
-        # clip particle velocities here - if a particle has not travelled far (cumdist), take the max if its energy release velocity and its xpbd calculated velocity (prevent overexplosion from overlap)
-        wp.launch(kernel=xpbdRoutines.clipParticleVelocitiesOnPhaseChange, 
-                dim=nPoints, 
-                inputs=[activeLabel,
-                        materialLabel,
-                        particle_cumDist_xpbd, 
-                        particle_v_initial_xpbd, 
-                        particle_v, 
-                        particle_radius], 
-                device=device)
-
-        # swell particles here
-        if swellingRatio > 0:
-            # print('type2')
-            # could use path integral or monotonic radius from displacement. latter is used.
-            wp.launch(kernel=xpbdRoutines.swellParticlesType2, 
-                    dim=nPoints, 
-                    inputs=[activeLabel,
-                            materialLabel,
-                            particle_x_initial_xpbd, 
-                            particle_x, 
-                            particle_radius, 
-                            swellingActivationFactor, 
-                            swellingMaxFactor, 
-                            particleMaxRadius, 
-                            particleBaseRadius], 
-                    device=device)
 
     t=t+dt
     counter=counter+1
-    if np.mod(counter,250)==0:
-        print(f'Step: {counter}, Time: {t}, r: {particle_radius.numpy().max()}')
+    if np.mod(counter,100)==0:
+        residualCPU = residual.numpy()[0]/numActiveParticles.numpy()[0]
+        print(f'Step: {counter}, simulationTime: {t:.4f}s, deltaTime: +{time.time()-stepStartTime:.4f}s, realTime: {time.time()-startTime:.4f}s, residual: {residualCPU:.4e}')
         if render:
             renderer.begin_frame()
             # colors=fs5PlotUtils.values_to_rgb(np.arange(0,nPoints,1),min_val=0, max_val=nPoints)

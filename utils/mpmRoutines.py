@@ -1,5 +1,7 @@
 import warp as wp
 
+
+
 @wp.kernel
 def compute_mu_lam_bulk_from_E_nu(
     E:  wp.array(dtype=float),
@@ -42,6 +44,9 @@ def compute_stress_from_F_trial(
     particle_density: wp.array(dtype=float),
     yMod: wp.array(dtype=float),
     efficiency: float,
+    eta_shear: wp.array(dtype=float),
+    eta_bulk: wp.array(dtype=float),
+    particle_C: wp.array(dtype=wp.mat33),
     particle_stress: wp.array(dtype=wp.mat33), 
 ):
     p = wp.tid()
@@ -75,10 +80,31 @@ def compute_stress_from_F_trial(
             stress = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
             wp.svd3(particle_F[p], U, sig, V)
 
-            stress = kirchoff_stress_drucker_prager(particle_F[p], U, V, sig, mu[p], lam[p])
+            stress = kirchoff_stress(particle_F[p], U, V, sig, mu[p], lam[p])
 
             stress = (stress + wp.transpose(stress)) / 2.0  # enfore symmetry
+
+
+            # === Kelvin-Voigt damping ===
+            #TODO: eta should scale with damage, can add rayleigh high and low frequency damping
+            # Get symmetric part of velocity gradient
+            grad_v = particle_C[p]  # particle_C already stores gradv (from G2P)
+            strain_rate = 0.5 * (grad_v + wp.transpose(grad_v))
+            volumetric_rate = (strain_rate[0, 0] + strain_rate[1, 1] + strain_rate[2, 2])
+
+            # Deviatoric part (trace-free)
+            identity = wp.mat33(1.0, 0.0, 0.0,
+                                0.0, 1.0, 0.0,
+                                0.0, 0.0, 1.0)
+            strain_rate_dev = strain_rate - (volumetric_rate / 3.0) * identity
+
+            viscous_stress = (2.0 * eta_shear[p]) * strain_rate_dev + eta_bulk[p] * volumetric_rate * identity
+
+            # Add to Kirchhoff stress
+            stress = stress + viscous_stress
+
             particle_stress[p] = stress
+
 
 @wp.func
 def von_mises_return_mapping_with_damage_YDW(
@@ -107,7 +133,7 @@ def von_mises_return_mapping_with_damage_YDW(
     sig = wp.vec3(
         wp.max(sig_old[0], 0.01), wp.max(sig_old[1], 0.01), wp.max(sig_old[2], 0.01)
     )  # add this to prevent NaN in extrem cases
-    epsilon = wp.vec3(wp.log(sig[0]), wp.log(sig[1]), wp.log(sig[2])) #log of the trace of the stress tensor
+    epsilon = wp.vec3(wp.log(sig[0]), wp.log(sig[1]), wp.log(sig[2])) #log of the trace of the stretch tensor
     temp = (epsilon[0] + epsilon[1] + epsilon[2]) / 3.0
 
     tau = 2.0 * mu[p] * epsilon + lam[p] * (
@@ -172,7 +198,7 @@ def von_mises_return_mapping_with_damage_YDW(
 
 
 @wp.func
-def kirchoff_stress_drucker_prager(
+def kirchoff_stress(
     F: wp.mat33, U: wp.mat33, V: wp.mat33, sig: wp.vec3, mu: float, lam: float
 ):
     sig0 = wp.max(sig[0], 1e-6)
