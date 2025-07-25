@@ -2,6 +2,15 @@ import warp as wp
 from utils import xpbdRoutines
 from utils import mpmRoutines
 
+# save into A the minimum between A and B
+@wp.kernel
+def arrayScalarMultiply(
+    grid_A: wp.array(dtype=float),
+    scalar: float):
+    x = wp.tid()
+    grid_A[x] = grid_A[x] * scalar
+
+
 @wp.kernel
 def velocityConvergence(
     activeLabel: wp.array(dtype=wp.int32),
@@ -32,6 +41,7 @@ def mpmSimulationStep(
     particle_F,
     particle_F_trial,
     particle_stress,
+    particle_accumulated_strain,
     particle_C,
     particle_vol,
     particle_mass,
@@ -43,9 +53,8 @@ def mpmSimulationStep(
     lam,
     ys,
     hardening,
-    xi,
     softening,
-    yMod,
+    strainCriteria,
     eta_shear,
     eta_bulk,
     eff,
@@ -89,15 +98,15 @@ def mpmSimulationStep(
             lam,
             ys,
             hardening,
-            xi,
             softening,
             particle_density,
-            yMod,
+            strainCriteria,
             eff,
             eta_shear,
             eta_bulk,
             particle_C,
-            particle_stress
+            particle_stress,
+            particle_accumulated_strain
         ],
         device=device
     )
@@ -165,6 +174,18 @@ def mpmSimulationStep(
         ],
         device=device
     )
+
+    # wp.launch(
+    #     kernel=mpmRoutines.collideBoundsAbsorbing,
+    #     dim=gridDims,
+    #     inputs=[
+    #         grid_v_out,
+    #         gridDims[0],
+    #         gridDims[1],
+    #         gridDims[2],
+    #     ],
+    #     device=device
+    # )
 
     # 7. Grid-to-particle transfer (update x, v, C, F_trial)
     wp.launch(

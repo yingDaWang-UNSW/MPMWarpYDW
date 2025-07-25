@@ -245,7 +245,7 @@ def clipParticleVelocitiesOnPhaseChange(
     if activeLabel[tid]==1:
         if materialLabel[tid] == 2:
             # if total distance from genertion less than 2 particles, clip
-            if particle_distance_total[tid]<radius[tid]*4.0:
+            if particle_distance_total[tid]<radius[tid]*2.0:
                 if wp.length(particle_v[tid])>wp.length(particleInitialXPBDVelocity[tid]):
                     particle_v[tid] = particleInitialXPBDVelocity[tid]
 

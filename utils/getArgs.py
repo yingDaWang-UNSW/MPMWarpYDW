@@ -1,4 +1,5 @@
 import argparse
+from html import parser
 import json
 import os
 import pprint
@@ -24,7 +25,7 @@ def get_args():
     parser.add_argument("--nSteps", type=int, default=2500000, help="Number of simulation steps")
 
     # Damping & integration
-    parser.add_argument("--rpic_damping", type=float, default=0.0, help="Damping for P2G transfer")
+    parser.add_argument("--rpic_damping", type=float, default=0.2, help="Damping for P2G transfer")
     parser.add_argument("--grid_v_damping_scale", type=float, default=1.1, help="Damping factor for grid velocities")
     parser.add_argument("--update_cov", type=int, default=1, help="Update covariance in G2P")
 
@@ -42,18 +43,19 @@ def get_args():
     parser.add_argument("--E", type=float, default=1e8, help="Young's modulus (Pa)")
     parser.add_argument("--nu", type=float, default=0.3, help="Poisson's ratio")
     parser.add_argument("--ys", type=float, default=3e6, help="Yield stress (Pa)")
-    parser.add_argument("--hardening", type=int, default=0, help="Hardening type")
-    parser.add_argument("--xi", type=float, default=10.0, help="Hardening parameter")
-    parser.add_argument("--softening", type=float, default=1e7, help="Softening modulus")
+    parser.add_argument("--hardening", type=float, default=0, help="Hardening parameter")
+    parser.add_argument("--softening", type=float, default=0, help="Softening modulus")
     parser.add_argument("--eta_shear", type=float, default=1e7, help="Shear viscosity")
     parser.add_argument("--eta_bulk", type=float, default=1e7, help="Bulk viscosity")
 
     # Gravity
     parser.add_argument("--gravity", type=float, default=-9.81, help="Gravity (m/s²)")
+    parser.add_argument("--K0", type=float, default=0.5, help="Lateral earth pressure coefficient for initial stress")
 
     # Boundary & friction
-    parser.add_argument("--boundFriction", type=float, default=0.0, help="Bounding box friction")
+    parser.add_argument("--boundFriction", type=float, default=0.2, help="Bounding box friction")
     parser.add_argument("--eff", type=float, default=0.05, help="Phase change efficiency")
+    parser.add_argument("--strainCriteria", type=float, default=0.05, help="Critical accumulated strain for phase change")
 
     # XPBD parameters
     parser.add_argument("--xpbd_relaxation", type=float, default=1.0, help="XPBD relaxation factor")

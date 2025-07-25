@@ -1,5 +1,27 @@
 import warp as wp
 
+@wp.kernel
+def initialize_geostatic_stress(
+    particle_x: wp.array(dtype=wp.vec3),
+    particle_stress: wp.array(dtype=wp.mat33),
+    density: wp.array(dtype=float),
+    gravity: float,
+    z_top: float,
+    K0: float
+):
+    tid = wp.tid()
+    z = particle_x[tid][2]
+    depth = z_top - z  # distance below the top surface
+    sig_zz = density[tid] * gravity * depth
+    sig_xx = K0 * sig_zz
+    sig_yy = K0 * sig_zz
+
+    # Fill stress tensor (compressive is positive here)
+    particle_stress[tid] = wp.mat33(
+        sig_xx, 0.0, 0.0,
+        0.0, sig_yy, 0.0,
+        0.0, 0.0, sig_zz
+    )
 
 
 @wp.kernel
@@ -38,16 +60,16 @@ def compute_stress_from_F_trial(
     mu:  wp.array(dtype=float),
     lam:  wp.array(dtype=float),
     yield_stress: wp.array(dtype=float),
-    hardening: wp.array(dtype=wp.int32),
-    xi:  wp.array(dtype=float),
+    hardening:  wp.array(dtype=float),
     softening: wp.array(dtype=float),
     particle_density: wp.array(dtype=float),
-    yMod: wp.array(dtype=float),
+    strainCriteria: wp.array(dtype=float),
     efficiency: float,
     eta_shear: wp.array(dtype=float),
     eta_bulk: wp.array(dtype=float),
     particle_C: wp.array(dtype=wp.mat33),
     particle_stress: wp.array(dtype=wp.mat33), 
+    particle_accumulated_strain: wp.array(dtype=float)
 ):
     p = wp.tid()
     # apply return mapping on mpm active particles
@@ -60,14 +82,14 @@ def compute_stress_from_F_trial(
                 initialPhaseChangePosition,
                 initialPhaseChangeVelocity,
                 materialLabel,
+                particle_accumulated_strain,
                 mu,
                 lam,
                 yield_stress,
                 hardening,
-                xi,
                 softening, 
                 particle_density,
-                yMod,
+                strainCriteria,
                 efficiency,
                 p
             )
@@ -114,14 +136,14 @@ def von_mises_return_mapping_with_damage_YDW(
     initialPhaseChangePosition: wp.array(dtype=wp.vec3),
     initialPhaseChangeVelocity: wp.array(dtype=wp.vec3),
     materialLabel: wp.array(dtype=wp.int32),
+    particle_accumulated_strain: wp.array(dtype=float),
     mu:  wp.array(dtype=float),
     lam:  wp.array(dtype=float),
     yield_stress: wp.array(dtype=float),
-    hardening: wp.array(dtype=wp.int32),
-    xi:  wp.array(dtype=float),
+    hardening:  wp.array(dtype=float),
     softening: wp.array(dtype=float),
     density: wp.array(dtype=float),
-    youngs_modulus: wp.array(dtype=float),
+    strainCriteria: wp.array(dtype=float),
     efficiency: float,
     p: int
 ):
@@ -143,8 +165,15 @@ def von_mises_return_mapping_with_damage_YDW(
     cond = wp.vec3(
         tau[0] - sum_tau / 3.0, tau[1] - sum_tau / 3.0, tau[2] - sum_tau / 3.0
     )
+
+
     if wp.length(cond) > yield_stress[p]:
-        if wp.length(cond) > yield_stress[p]*1.25:
+        epsilon_hat = epsilon - wp.vec3(temp, temp, temp)
+        epsilon_hat_norm = wp.length(epsilon_hat) + 1e-6
+        delta_gamma = epsilon_hat_norm - yield_stress[p] / (2.0 * mu[p])
+        particle_accumulated_strain[p] += wp.sqrt(2.0/3.0) * delta_gamma
+
+        if particle_accumulated_strain[p] > strainCriteria[p]:  # only apply phase change if strain is significant TODO: this should be based on accumulated strain
             materialLabel[p] = 2
             initialPhaseChangePosition[p] = particlePosition[p]
             # estimate the velocity from energy release
@@ -165,12 +194,10 @@ def von_mises_return_mapping_with_damage_YDW(
             v_dir = wp.normalize(particleVelocity[p] + wp.vec3(1e-12))  # avoid divide by zero
             particleVelocity[p] = particleVelocity[p] + v_expected * v_dir
             initialPhaseChangeVelocity[p] = particleVelocity[p]
-
+            
         if yield_stress[p] <= 0:
             return F_trial
-        epsilon_hat = epsilon - wp.vec3(temp, temp, temp)
-        epsilon_hat_norm = wp.length(epsilon_hat) + 1e-6
-        delta_gamma = epsilon_hat_norm - yield_stress[p] / (2.0 * mu[p])
+
         epsilon = epsilon - (delta_gamma / epsilon_hat_norm) * epsilon_hat
         yield_stress[p] = yield_stress[p] - softening[p] * wp.length((delta_gamma / epsilon_hat_norm) * epsilon_hat)
         if yield_stress[p] <= 0:
@@ -188,9 +215,9 @@ def von_mises_return_mapping_with_damage_YDW(
             wp.exp(epsilon[2]),
         )
         F_elastic = U * sig_elastic * wp.transpose(V)
-        if hardening[p] == 1:
+        if hardening[p] > 0.0:
             yield_stress[p] = (
-                yield_stress[p] + 2.0 * mu[p] * xi[p] * delta_gamma
+                yield_stress[p] + 2.0 * mu[p] * hardening[p] * delta_gamma
             )
         return F_elastic
     else:
@@ -525,4 +552,54 @@ def collideBounds(
             0.0,
         )
 
-# routines to extract rotation and covariance from deformation gradient
+
+@wp.kernel
+def collideBoundsAbsorbing(
+    grid_v_out: wp.array(dtype=wp.vec3, ndim=3),
+    grid_dim_x: int,
+    grid_dim_y: int,
+    grid_dim_z: int
+):
+    grid_x, grid_y, grid_z = wp.tid()
+    padding = wp.float32(3.0)
+    damping_inner = wp.float32(1)
+    damping_outer = wp.float32(0.0)
+    one = wp.float32(1.0)
+
+    v = grid_v_out[grid_x, grid_y, grid_z]
+
+    # -X boundary
+    if grid_x < 3:
+        layer_factor = (padding - wp.float32(grid_x)) / padding
+        damping = damping_outer * layer_factor + damping_inner * (one - layer_factor)
+        grid_v_out[grid_x, grid_y, grid_z] = v * damping
+
+    # +X boundary
+    if grid_x >= grid_dim_x - 3:
+        layer_factor = (padding - wp.float32(grid_dim_x - 1 - grid_x)) / padding
+        damping = damping_outer * layer_factor + damping_inner * (one - layer_factor)
+        grid_v_out[grid_x, grid_y, grid_z] = v * damping
+
+    # -Y boundary
+    if grid_y < 3:
+        layer_factor = (padding - wp.float32(grid_y)) / padding
+        damping = damping_outer * layer_factor + damping_inner * (one - layer_factor)
+        grid_v_out[grid_x, grid_y, grid_z] = v * damping
+
+    # +Y boundary
+    if grid_y >= grid_dim_y - 3:
+        layer_factor = (padding - wp.float32(grid_dim_y - 1 - grid_y)) / padding
+        damping = damping_outer * layer_factor + damping_inner * (one - layer_factor)
+        grid_v_out[grid_x, grid_y, grid_z] = v * damping
+
+    # -Z boundary
+    if grid_z < 3:
+        layer_factor = (padding - wp.float32(grid_z)) / padding
+        damping = damping_outer * layer_factor + damping_inner * (one - layer_factor)
+        grid_v_out[grid_x, grid_y, grid_z] = v * damping
+
+    # +Z boundary
+    if grid_z >= grid_dim_z - 3:
+        layer_factor = (padding - wp.float32(grid_dim_z - 1 - grid_z)) / padding
+        damping = damping_outer * layer_factor + damping_inner * (one - layer_factor)
+        grid_v_out[grid_x, grid_y, grid_z] = v * damping
