@@ -69,7 +69,8 @@ def compute_stress_from_F_trial(
     eta_bulk: wp.array(dtype=float),
     particle_C: wp.array(dtype=wp.mat33),
     particle_stress: wp.array(dtype=wp.mat33), 
-    particle_accumulated_strain: wp.array(dtype=float)
+    particle_accumulated_strain: wp.array(dtype=float),
+    particle_damage: wp.array(dtype=float)
 ):
     p = wp.tid()
     # apply return mapping on mpm active particles
@@ -83,6 +84,7 @@ def compute_stress_from_F_trial(
                 initialPhaseChangeVelocity,
                 materialLabel,
                 particle_accumulated_strain,
+                particle_damage,
                 mu,
                 lam,
                 yield_stress,
@@ -137,6 +139,7 @@ def von_mises_return_mapping_with_damage_YDW(
     initialPhaseChangeVelocity: wp.array(dtype=wp.vec3),
     materialLabel: wp.array(dtype=wp.int32),
     particle_accumulated_strain: wp.array(dtype=float),
+    damage: wp.array(dtype=float),
     mu:  wp.array(dtype=float),
     lam:  wp.array(dtype=float),
     yield_stress: wp.array(dtype=float),
@@ -152,28 +155,36 @@ def von_mises_return_mapping_with_damage_YDW(
     sig_old = wp.vec3(0.0) 
     wp.svd3(F_trial, U, sig_old, V) 
 
-    sig = wp.vec3(
-        wp.max(sig_old[0], 0.01), wp.max(sig_old[1], 0.01), wp.max(sig_old[2], 0.01)
-    )  # add this to prevent NaN in extrem cases
-    epsilon = wp.vec3(wp.log(sig[0]), wp.log(sig[1]), wp.log(sig[2])) #log of the trace of the stretch tensor
-    temp = (epsilon[0] + epsilon[1] + epsilon[2]) / 3.0
+    sig = wp.vec3(wp.max(sig_old[0], 0.01), wp.max(sig_old[1], 0.01), wp.max(sig_old[2], 0.01))  # add this to prevent NaN in extrem cases
+    epsilon = wp.vec3(wp.log(sig[0]), wp.log(sig[1]), wp.log(sig[2]))
+    mean_eps = (epsilon[0] + epsilon[1] + epsilon[2]) / 3.0
+    epsilon_dev = epsilon - wp.vec3(mean_eps)
 
-    tau = 2.0 * mu[p] * epsilon + lam[p] * (
-        epsilon[0] + epsilon[1] + epsilon[2]
-    ) * wp.vec3(1.0, 1.0, 1.0)
-    sum_tau = tau[0] + tau[1] + tau[2]
-    cond = wp.vec3(
-        tau[0] - sum_tau / 3.0, tau[1] - sum_tau / 3.0, tau[2] - sum_tau / 3.0
-    )
+    # Trial deviatoric stress (effective)
+    tau = 2.0 * mu[p] * epsilon + lam[p] * (epsilon[0] + epsilon[1] + epsilon[2]) * wp.vec3(1.0)
+    tau_dev = tau - (tau[0] + tau[1] + tau[2]) / 3.0 * wp.vec3(1.0)
 
+    # Modified yield stress due to damage
+    D = damage[p]
+    sigma_eq = wp.length(tau_dev)
+    yield_eff = (1.0 - D) * yield_stress[p]
 
-    if wp.length(cond) > yield_stress[p]:
-        epsilon_hat = epsilon - wp.vec3(temp, temp, temp)
-        epsilon_hat_norm = wp.length(epsilon_hat) + 1e-6
-        delta_gamma = epsilon_hat_norm - yield_stress[p] / (2.0 * mu[p])
-        particle_accumulated_strain[p] += wp.sqrt(2.0/3.0) * delta_gamma
+    if sigma_eq > yield_eff:
+        epsilon_dev_norm = wp.length(epsilon_dev) + 1e-6
 
-        if particle_accumulated_strain[p] > strainCriteria[p]:  # only apply phase change if strain is significant TODO: this should be based on accumulated strain
+        delta_gamma = epsilon_dev_norm - yield_eff / (2.0 * mu[p])
+        # Accumulate plastic strain
+        plastic_strain_increment = wp.sqrt(2.0 / 3.0) * delta_gamma
+        particle_accumulated_strain[p] += plastic_strain_increment
+
+        # === Damage evolution ===
+        if strainCriteria[p] > 0.0:
+            dD = plastic_strain_increment / strainCriteria[p]
+            damage[p] = wp.min(1.0, damage[p] + dD)
+            D = damage[p]  # Update effective value
+            
+        # === Phase transition ===
+        if damage[p] >= 1.0:
             materialLabel[p] = 2
             initialPhaseChangePosition[p] = particlePosition[p]
             # estimate the velocity from energy release
@@ -195,31 +206,30 @@ def von_mises_return_mapping_with_damage_YDW(
             particleVelocity[p] = particleVelocity[p] + v_expected * v_dir
             initialPhaseChangeVelocity[p] = particleVelocity[p]
             
-        if yield_stress[p] <= 0:
             return F_trial
+        
+        # Plastic correction
+        epsilon = epsilon - (delta_gamma / epsilon_dev_norm) * epsilon_dev
 
-        epsilon = epsilon - (delta_gamma / epsilon_hat_norm) * epsilon_hat
-        yield_stress[p] = yield_stress[p] - softening[p] * wp.length((delta_gamma / epsilon_hat_norm) * epsilon_hat)
-        if yield_stress[p] <= 0:
+        # Update yield stress (softening or hardening)
+        yield_stress[p] += 2.0 * mu[p] * hardening[p] * delta_gamma
+        yield_stress[p] -= softening[p] * wp.length((delta_gamma / epsilon_dev_norm) * epsilon_dev)
+
+        # fail the material
+        if yield_stress[p] < 0.0:
+            yield_stress[p] = 0.0
             mu[p] = 0.0
             lam[p] = 0.0
+
+        # Reconstruct elastic part
         sig_elastic = wp.mat33(
-            wp.exp(epsilon[0]),
-            0.0,
-            0.0,
-            0.0,
-            wp.exp(epsilon[1]),
-            0.0,
-            0.0,
-            0.0,
-            wp.exp(epsilon[2]),
+            wp.exp(epsilon[0]), 0.0, 0.0,
+            0.0, wp.exp(epsilon[1]), 0.0,
+            0.0, 0.0, wp.exp(epsilon[2])
         )
         F_elastic = U * sig_elastic * wp.transpose(V)
-        if hardening[p] > 0.0:
-            yield_stress[p] = (
-                yield_stress[p] + 2.0 * mu[p] * hardening[p] * delta_gamma
-            )
         return F_elastic
+
     else:
         return F_trial
 

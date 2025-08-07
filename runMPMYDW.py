@@ -130,8 +130,8 @@ particle_stress = wp.zeros(shape=nPoints, dtype=wp.mat33)
 # )
 # gravity = wp.vec3(0.0, 0.0, 0.0)
 
-
 particle_accumulated_strain = wp.zeros(shape=nPoints, dtype=float, device=device)
+particle_damage = wp.zeros(shape=nPoints, dtype=float, device=device)
 particle_C = wp.zeros(shape=nPoints, dtype=wp.mat33)
 particle_init_cov = wp.zeros(shape=nPoints * 6, dtype=float, device=device)
 particle_cov = wp.zeros(shape=nPoints * 6, dtype=float, device=device)
@@ -176,7 +176,7 @@ particleMaxRadius = wp.array(particleMaxRadius)
 # --- Velocity limits & bounds ---
 particle_v_max = args.particle_v_max
 max_radius = np.max(particleMaxRadius.numpy())
-padding = 2.5
+padding = 3 - max_radius
 minBoundsXPBD = wp.vec3(minBounds[0] + padding * dx, minBounds[1] + padding * dx, minBounds[2] + padding * dx)
 maxBoundsXPBD = wp.vec3(maxBounds[0] - padding * dx, maxBounds[1] - padding * dx, maxBounds[2] - padding * dx)
 
@@ -214,7 +214,6 @@ if render:
     renderer=fs5PlotUtils.look_at_centroid(x,renderer,renderer.camera_fov)
     maxStress=0.0
     maxStrain=0.0
-
 t=0
 startTime=time.time()
 for bigStep in range(0, 100):
@@ -237,6 +236,7 @@ for bigStep in range(0, 100):
             particle_F_trial,
             particle_stress,
             particle_accumulated_strain,
+            particle_damage,
             particle_C,
             particle_vol,
             particle_mass,
@@ -344,24 +344,24 @@ for bigStep in range(0, 100):
                 # colors=fs5PlotUtils.values_to_rgb(np.arange(0,nPoints,1),min_val=0, max_val=nPoints)
                 # colors=fs5PlotUtils.values_to_rgb(ys.numpy(),min_val=0.0, max_val=ys.numpy().max())
                 # colors=fs5PlotUtils.values_to_rgb(particle_radius.numpy(),min_val=particleBaseRadius.numpy().min(), max_val=particleMaxRadius.numpy().max())
-                # colors=fs5PlotUtils.values_to_rgb(particle_accumulated_strain.numpy(),min_val=particle_accumulated_strain.numpy().min(), max_val=args.strainCriteria)
+                colors=fs5PlotUtils.values_to_rgb(particle_damage.numpy(),min_val=0.0, max_val=1.0)
                 # colors=fs5PlotUtils.values_to_rgb(particle_v.numpy()[:,2],min_val=particle_v.numpy()[:,2].min(), max_val=particle_v.numpy()[:,2].max())
 
-                x=particle_stress.numpy()
-                # x is your (N, 3, 3) array of stress tensors
-                sigma = x.astype(np.float64)  # promote to float64 if needed
+                # x=particle_stress.numpy()
+                # # x is your (N, 3, 3) array of stress tensors
+                # sigma = x.astype(np.float64)  # promote to float64 if needed
 
-                # Compute mean (hydrostatic) stress for each tensor
-                mean_stress = np.trace(sigma, axis1=1, axis2=2) / 3.0  # shape (N,)
+                # # Compute mean (hydrostatic) stress for each tensor
+                # mean_stress = np.trace(sigma, axis1=1, axis2=2) / 3.0  # shape (N,)
 
-                # Subtract mean stress from diagonal elements to get deviatoric tensor
-                identity = np.eye(3)
-                s = sigma# - mean_stress[:, None, None] * identity  # broadcasted subtraction
+                # # Subtract mean stress from diagonal elements to get deviatoric tensor
+                # identity = np.eye(3)
+                # s = sigma# - mean_stress[:, None, None] * identity  # broadcasted subtraction
 
-                # Compute von Mises stress
-                von_mises = np.sqrt(1.5 * np.sum(s**2, axis=(1, 2)))  # shape (N,)
-                maxStress=np.max([np.max(von_mises),maxStress])
-                colors=fs5PlotUtils.values_to_rgb(von_mises,min_val=0.0, max_val=maxStress)
+                # # Compute von Mises stress
+                # von_mises = np.sqrt(1.5 * np.sum(s**2, axis=(1, 2)))  # shape (N,)
+                # maxStress=np.max([np.max(von_mises),maxStress])
+                # colors=fs5PlotUtils.values_to_rgb(von_mises,min_val=0.0, max_val=maxStress)
 
                 renderer.render_points(points=particle_x, name="points", radius=particle_radius.numpy(), colors=colors, dynamic=True)
                 # renderer.render_box(name='simBounds',pos=[grid_lim/2,grid_lim/2,grid_lim/2],extents=[grid_lim/2,grid_lim/2,grid_lim/2],rot=[0,0,0,1])

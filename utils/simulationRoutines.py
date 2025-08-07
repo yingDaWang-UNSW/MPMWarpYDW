@@ -42,6 +42,7 @@ def mpmSimulationStep(
     particle_F_trial,
     particle_stress,
     particle_accumulated_strain,
+    particle_damage,
     particle_C,
     particle_vol,
     particle_mass,
@@ -106,7 +107,8 @@ def mpmSimulationStep(
             eta_bulk,
             particle_C,
             particle_stress,
-            particle_accumulated_strain
+            particle_accumulated_strain,
+            particle_damage,
         ],
         device=device
     )
