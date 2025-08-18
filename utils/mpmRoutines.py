@@ -1,6 +1,26 @@
 import warp as wp
 
 @wp.kernel
+def creep_by_damage_with_baseline(
+    materialLabel: wp.array(dtype=wp.int32),
+    damage: wp.array(dtype=float),
+    ys: wp.array(dtype=float),             # current yield stress
+    ys_base: wp.array(dtype=float),        # reference yield stress
+    dt: float,
+    base_creep: float,                     # A_base: baseline rate
+    damage_creep: float,                   # A_damage: damage-amplified rate
+    damage_exponent: float                 # beta: exponent on damage
+):
+    p = wp.tid()
+    if materialLabel[p] != 1:
+        return
+
+    D = damage[p]
+    creep_rate = base_creep + damage_creep * wp.pow(D, damage_exponent)
+    decay = creep_rate * ys_base[p] * dt
+    ys[p] = wp.max(ys_base[p] * 0.2, ys[p] - decay)  # floor at 20% of original
+
+@wp.kernel
 def initialize_geostatic_stress(
     particle_x: wp.array(dtype=wp.vec3),
     particle_stress: wp.array(dtype=wp.mat33),

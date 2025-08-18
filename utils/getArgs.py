@@ -41,7 +41,7 @@ def get_args():
     # Material properties
     parser.add_argument("--density", type=float, default=3000.0, help="Density of material (kg/m³)")
     parser.add_argument("--E", type=float, default=1e8, help="Young's modulus (Pa)")
-    parser.add_argument("--nu", type=float, default=0.3, help="Poisson's ratio")
+    parser.add_argument("--nu", type=float, default=0.2, help="Poisson's ratio")
     parser.add_argument("--ys", type=float, default=3e6, help="Yield stress (Pa)")
     parser.add_argument("--hardening", type=float, default=0, help="Hardening parameter")
     parser.add_argument("--softening", type=float, default=0, help="Softening modulus")

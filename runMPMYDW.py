@@ -47,6 +47,8 @@ print(f"Number of particles: {nPoints}")
 
 minBounds = np.min(x, 0) - args.grid_padding
 maxBounds = np.max(x, 0) + args.grid_padding
+minBounds[2] = np.min(x, 0)[2] - 10
+maxBounds[2] = np.max(x, 0)[2] + 2*args.grid_padding  # ensure z bounds are larger to avoid particles going out of bounds
 particleDiameter = np.mean(particle_volume) ** 0.33
 dx = particleDiameter * args.grid_particle_spacing_scale
 invdx = 1.0 / dx
@@ -65,6 +67,11 @@ density = np.full(nPoints, args.density, dtype=np.float32)
 E = np.full(nPoints, args.E, dtype=np.float32)
 nu = np.full(nPoints, args.nu, dtype=np.float32)
 ys = np.full(nPoints, args.ys, dtype=np.float32)
+# make ys lower at the top of the domain quadratically
+ys = ys * (1 - (x[:, 2] - minBounds[2]) / (maxBounds[2] - minBounds[2]))**3
+# make ys at the bottom infinite
+ys[x[:, 2] < minBounds[2] + 0.1 * (maxBounds[2] - minBounds[2])] = 1e10
+
 hardening = np.full(nPoints, args.hardening, dtype=np.float32)
 softening = np.full(nPoints, args.softening, dtype=np.float32)
 eta_shear = np.full(nPoints, args.eta_shear, dtype=np.float32)
@@ -90,7 +97,8 @@ wp.launch(kernel=mpmRoutines.compute_mu_lam_bulk_from_E_nu,
           inputs=[yMod, poissonRatio],
           outputs=[mu, lam, bulk],
           device=device)
-
+ys_base = ys.copy()  # keep a copy of the base yield stress for creep calculations`
+ys_base = wp.array(ys_base, dtype=wp.float32, device=device)
 ys = wp.array(ys, dtype=wp.float32, device=device)
 materialLabel = wp.array(materialLabel, dtype=wp.int32, device=device)
 activeLabel = wp.array(activeLabel, dtype=wp.int32, device=device)
@@ -338,13 +346,15 @@ for bigStep in range(0, 100):
         t=t+dt
         counter=counter+1
         if np.mod(counter,100)==0:
-            print(f'Step: {counter}, simulationTime: {t:.4f}s, deltaTime: +{time.time()-stepStartTime:.4f}s, realTime: {time.time()-startTime:.4f}s, residual: {residualCPU:.4e}, mean strain: {np.mean(particle_accumulated_strain.numpy()):.4f}, active particles: {numActiveParticles.numpy()[0]}')
+            print(f'Step: {counter}, simulationTime: {t:.4f}s, deltaTime: +{time.time()-stepStartTime:.4f}s, realTime: {time.time()-startTime:.4f}s, residual: {residualCPU:.4e}, mean accumulated plastic strain: {np.mean(particle_accumulated_strain.numpy()):.4f}, active particles: {numActiveParticles.numpy()[0]}')
             if render:
                 renderer.begin_frame()
                 # colors=fs5PlotUtils.values_to_rgb(np.arange(0,nPoints,1),min_val=0, max_val=nPoints)
                 # colors=fs5PlotUtils.values_to_rgb(ys.numpy(),min_val=0.0, max_val=ys.numpy().max())
                 # colors=fs5PlotUtils.values_to_rgb(particle_radius.numpy(),min_val=particleBaseRadius.numpy().min(), max_val=particleMaxRadius.numpy().max())
-                colors=fs5PlotUtils.values_to_rgb(particle_damage.numpy(),min_val=0.0, max_val=1.0)
+                # colors=fs5PlotUtils.values_to_rgb(particle_damage.numpy(),min_val=0.0, max_val=1.0)
+                colors = fs5PlotUtils.values_to_rgb((ys.numpy() / ys_base.numpy()), min_val=0.0, max_val=1.0)
+
                 # colors=fs5PlotUtils.values_to_rgb(particle_v.numpy()[:,2],min_val=particle_v.numpy()[:,2].min(), max_val=particle_v.numpy()[:,2].max())
 
                 # x=particle_stress.numpy()
@@ -382,9 +392,19 @@ for bigStep in range(0, 100):
                 )
 
     # when convergence is reached, reduce the yield stress by 10% to mimic creep over a long time TODO: the creep should be a function of damage in some spatially varying way 
+
     wp.launch(
-        kernel=simulationRoutines.arrayScalarMultiply,
+        kernel=mpmRoutines.creep_by_damage_with_baseline,
         dim=nPoints,
-        inputs=[ys, 0.9],
+        inputs=[
+            materialLabel,
+            particle_damage,
+            ys,
+            ys_base,
+            counter*dt,         # or dt * mpmStepsPerXpbdStep
+            0,           # base creep rate A_base (undamaged)
+            2e-0,           # damage-based creep A_damage
+            1.5             # damage exponent beta
+        ],
         device=device
     )
