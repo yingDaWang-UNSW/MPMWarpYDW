@@ -66,11 +66,12 @@ print(f"Total grid centroids: {centroids.shape[0]}")
 density = np.full(nPoints, args.density, dtype=np.float32)
 E = np.full(nPoints, args.E, dtype=np.float32)
 nu = np.full(nPoints, args.nu, dtype=np.float32)
-ys = np.full(nPoints, args.ys, dtype=np.float32)
-# make ys lower at the top of the domain quadratically
-ys = ys * (1 - (x[:, 2] - minBounds[2]) / (maxBounds[2] - minBounds[2]))**3
-# make ys at the bottom infinite
-ys[x[:, 2] < minBounds[2] + 0.1 * (maxBounds[2] - minBounds[2])] = 1e10
+
+# ys = np.full(nPoints, args.ys, dtype=np.float32)
+# # make ys lower at the top of the domain quadratically
+# ys = ys * (1 - (x[:, 2] - minBounds[2]) / (maxBounds[2] - minBounds[2]))**3
+# # make ys at the bottom infinite
+# ys[x[:, 2] < minBounds[2] + 0.1 * (maxBounds[2] - minBounds[2])] = 1e10
 
 hardening = np.full(nPoints, args.hardening, dtype=np.float32)
 softening = np.full(nPoints, args.softening, dtype=np.float32)
@@ -97,9 +98,10 @@ wp.launch(kernel=mpmRoutines.compute_mu_lam_bulk_from_E_nu,
           inputs=[yMod, poissonRatio],
           outputs=[mu, lam, bulk],
           device=device)
-ys_base = ys.copy()  # keep a copy of the base yield stress for creep calculations`
-ys_base = wp.array(ys_base, dtype=wp.float32, device=device)
-ys = wp.array(ys, dtype=wp.float32, device=device)
+
+# ys_base = ys.copy()  # keep a copy of the base yield stress for creep calculations`
+# ys_base = wp.array(ys_base, dtype=wp.float32, device=device)
+# ys = wp.array(ys, dtype=wp.float32, device=device)
 materialLabel = wp.array(materialLabel, dtype=wp.int32, device=device)
 activeLabel = wp.array(activeLabel, dtype=wp.int32, device=device)
 particle_density = wp.array(density, dtype=wp.float32, device=device)
@@ -127,16 +129,6 @@ wp.launch(kernel=mpmRoutines.set_mat33_to_identity,
           device=device)
 
 particle_stress = wp.zeros(shape=nPoints, dtype=wp.mat33)
-
-# z_top = maxBounds[2]  # top of domain
-# K0 = args.K0
-# wp.launch(
-#     kernel=mpmRoutines.initialize_geostatic_stress,
-#     dim=nPoints,
-#     inputs=[particle_x, particle_stress, particle_density, abs(args.gravity), z_top, K0],
-#     device=device
-# )
-# gravity = wp.vec3(0.0, 0.0, 0.0)
 
 particle_accumulated_strain = wp.zeros(shape=nPoints, dtype=float, device=device)
 particle_damage = wp.zeros(shape=nPoints, dtype=float, device=device)
@@ -188,12 +180,9 @@ padding = 3 - max_radius
 minBoundsXPBD = wp.vec3(minBounds[0] + padding * dx, minBounds[1] + padding * dx, minBounds[2] + padding * dx)
 maxBoundsXPBD = wp.vec3(maxBounds[0] - padding * dx, maxBounds[1] - padding * dx, maxBounds[2] - padding * dx)
 
-
 # xpbdParticleCount = np.sum(materialLabel.numpy() == 2) # count of xpbd particles, i.e. particles with material label 2
 #BOUNDARY CONDITIONS (DO THIS LATER)###############################################################################################################################
 
-residual = wp.array([1e10], dtype=float, device=device)  # residual for velocity convergence
-numActiveParticles = wp.array([0], dtype=wp.int32, device=device)  # number of active particles
 
 if render:
     # initialise renderer
@@ -222,6 +211,82 @@ if render:
     renderer=fs5PlotUtils.look_at_centroid(x,renderer,renderer.camera_fov)
     maxStress=0.0
     maxStrain=0.0
+
+# run a geostatic simulation to settle the particles under gravity - just need to make ys infinite
+ys = np.full(nPoints, 1e10, dtype=np.float32)  # set yield stress to a very high value to simulate geostatic conditions
+ys_base = ys.numpy().copy()  # keep a copy of the base yield stress for creep calculations
+ys_base = wp.array(ys_base, dtype=wp.float32, device=device)
+ys = wp.array(ys, dtype=wp.float32, device=device)
+
+for n in range(1e5):
+    print(f"Running static initialiser {n+1}")
+
+    simulationRoutines.mpmSimulationStep(
+        particle_x,
+        particle_v,
+        particle_x_initial_xpbd,
+        particle_v_initial_xpbd,
+        particle_F,
+        particle_F_trial,
+        particle_stress,
+        particle_accumulated_strain,
+        particle_damage,
+        particle_C,
+        particle_vol,
+        particle_mass,
+        particle_density,
+        particle_cov,
+        activeLabel,
+        materialLabel,
+        mu,
+        lam,
+        ys,
+        hardening,
+        softening,
+        strainCriteria,
+        eta_shear,
+        eta_bulk,
+        eff,
+        dx,
+        invdx,
+        minBounds,
+        rpic_damping,
+        dt,
+        gravity,
+        grid_m,
+        grid_v_in,
+        grid_v_out,
+        gridDims,
+        grid_v_damping_scale,
+        boundFriction,
+        update_cov,
+        nPoints,
+        device
+    )
+    maxStress = fs5PlotUtils.render_and_save(
+        renderer,
+        particle_x,
+        particle_v,
+        particle_radius,
+        ys,
+        ys_base,
+        particle_damage,
+        particle_stress,
+        grid_m,
+        minBounds,
+        dx,
+        0,
+        0,
+        nPoints,
+        saveFlag=False,
+        color_mode="von_mises",   # or "von_mises", "damage", "vz"
+        maxStress=maxStress
+    )
+
+
+residual = wp.array([1e10], dtype=float, device=device)  # residual for velocity convergence
+numActiveParticles = wp.array([0], dtype=wp.int32, device=device)  # number of active particles
+
 t=0
 startTime=time.time()
 for bigStep in range(0, 100):
@@ -348,49 +413,25 @@ for bigStep in range(0, 100):
         if np.mod(counter,100)==0:
             print(f'Step: {counter}, simulationTime: {t:.4f}s, deltaTime: +{time.time()-stepStartTime:.4f}s, realTime: {time.time()-startTime:.4f}s, residual: {residualCPU:.4e}, mean accumulated plastic strain: {np.mean(particle_accumulated_strain.numpy()):.4f}, active particles: {numActiveParticles.numpy()[0]}')
             if render:
-                renderer.begin_frame()
-                # colors=fs5PlotUtils.values_to_rgb(np.arange(0,nPoints,1),min_val=0, max_val=nPoints)
-                # colors=fs5PlotUtils.values_to_rgb(ys.numpy(),min_val=0.0, max_val=ys.numpy().max())
-                # colors=fs5PlotUtils.values_to_rgb(particle_radius.numpy(),min_val=particleBaseRadius.numpy().min(), max_val=particleMaxRadius.numpy().max())
-                # colors=fs5PlotUtils.values_to_rgb(particle_damage.numpy(),min_val=0.0, max_val=1.0)
-                colors = fs5PlotUtils.values_to_rgb((ys.numpy() / ys_base.numpy()), min_val=0.0, max_val=1.0)
-
-                # colors=fs5PlotUtils.values_to_rgb(particle_v.numpy()[:,2],min_val=particle_v.numpy()[:,2].min(), max_val=particle_v.numpy()[:,2].max())
-
-                # x=particle_stress.numpy()
-                # # x is your (N, 3, 3) array of stress tensors
-                # sigma = x.astype(np.float64)  # promote to float64 if needed
-
-                # # Compute mean (hydrostatic) stress for each tensor
-                # mean_stress = np.trace(sigma, axis1=1, axis2=2) / 3.0  # shape (N,)
-
-                # # Subtract mean stress from diagonal elements to get deviatoric tensor
-                # identity = np.eye(3)
-                # s = sigma# - mean_stress[:, None, None] * identity  # broadcasted subtraction
-
-                # # Compute von Mises stress
-                # von_mises = np.sqrt(1.5 * np.sum(s**2, axis=(1, 2)))  # shape (N,)
-                # maxStress=np.max([np.max(von_mises),maxStress])
-                # colors=fs5PlotUtils.values_to_rgb(von_mises,min_val=0.0, max_val=maxStress)
-
-                renderer.render_points(points=particle_x, name="points", radius=particle_radius.numpy(), colors=colors, dynamic=True)
-                # renderer.render_box(name='simBounds',pos=[grid_lim/2,grid_lim/2,grid_lim/2],extents=[grid_lim/2,grid_lim/2,grid_lim/2],rot=[0,0,0,1])
-                renderer.end_frame()
-                renderer.update_view_matrix()
-
-                # engine_utils.save_data_at_frame(mpm_solver, directory_to_save, k, save_to_ply=1, save_to_h5=0)
-                # time.sleep(1)
-            if saveFlag:
-                # save points and fields for visualization
-                fs5PlotUtils.save_grid_and_particles_vti_vtp(
-                    output_prefix=f"./output/sim_step_{bigStep}_{counter:06d}",
-                    grid_mass=grid_m.numpy(),              # shape (nx, ny, nz)
-                    minBounds=minBounds,                         # (x0, y0, z0)
-                    dx=dx,
-                    particle_positions=particle_x.numpy(),          # shape (N, 3)
-                    particle_radius=np.arange(0,nPoints,1)                         # for Point Gaussian
+                maxStress = fs5PlotUtils.render_and_save(
+                    renderer,
+                    particle_x,
+                    particle_v,
+                    particle_radius,
+                    ys,
+                    ys_base,
+                    particle_damage,
+                    particle_stress,
+                    grid_m,
+                    minBounds,
+                    dx,
+                    bigStep,
+                    counter,
+                    nPoints,
+                    saveFlag=saveFlag,
+                    color_mode="yield_ratio",   # or "von_mises", "damage", "vz"
+                    maxStress=maxStress
                 )
-
     # when convergence is reached, reduce the yield stress by 10% to mimic creep over a long time TODO: the creep should be a function of damage in some spatially varying way 
 
     wp.launch(

@@ -298,3 +298,115 @@ def save_grid_and_particles_vti_vtp(
     writer_vtp.Write()
 
     print(f"Exported: {output_prefix}_grid.vti and {output_prefix}_particles.vtp")
+
+
+def render_and_save(
+    renderer,
+    particle_x,
+    particle_v,
+    particle_radius,
+    ys,
+    ys_base,
+    particle_damage,
+    particle_stress,
+    grid_m,
+    minBounds,
+    dx,
+    bigStep,
+    counter,
+    nPoints,
+    saveFlag=False,
+    color_mode="yield_ratio",
+    maxStress=None
+):
+    """
+    Render particles and optionally save grid/particle state.
+
+    Parameters
+    ----------
+    renderer : OpenGLRenderer
+        Active renderer instance.
+    particle_x : wp.array (N,3)
+    particle_radius : wp.array (N,)
+    ys : wp.array (N,)
+    ys_base : wp.array (N,)
+    particle_damage : wp.array (N,)
+    particle_stress : wp.array (N,3,3)
+    grid_m : wp.array (nx,ny,nz)
+    minBounds : wp.vec3 or np.array(3,)
+    dx : float
+    bigStep : int
+    counter : int
+    nPoints : int
+    saveFlag : bool
+    color_mode : str
+        Options: "yield_ratio", "damage", "vz", "von_mises"
+    maxStress : float or None
+        If color_mode="von_mises", this is the running max for normalization.
+    """
+
+    # --- Choose coloring ---
+    if color_mode == "yield_ratio":
+        colors = values_to_rgb(
+            (ys.numpy() / ys_base.numpy()),
+            min_val=0.0,
+            max_val=1.0
+        )
+
+    elif color_mode == "damage":
+        colors = values_to_rgb(
+            particle_damage.numpy(),
+            min_val=0.0,
+            max_val=1.0
+        )
+
+    elif color_mode == "vz":
+        vz = particle_v.numpy()[:, 2]
+        colors = values_to_rgb(
+            vz,
+            min_val=vz.min(),
+            max_val=vz.max()
+        )
+
+    elif color_mode == "von_mises":
+        sigma = particle_stress.numpy().astype(np.float64)  # (N,3,3)
+        mean_stress = np.trace(sigma, axis1=1, axis2=2) / 3.0
+        identity = np.eye(3)
+        s = sigma - mean_stress[:, None, None] * identity
+        von_mises = np.sqrt(1.5 * np.sum(s**2, axis=(1, 2)))
+
+        if maxStress is None:
+            maxStress = np.max(von_mises)
+
+        colors = values_to_rgb(
+            von_mises,
+            min_val=0.0,
+            max_val=maxStress
+        )
+    else:
+        raise ValueError(f"Unknown color_mode: {color_mode}")
+
+    # --- Render ---
+    renderer.begin_frame()
+    renderer.render_points(
+        points=particle_x,
+        name="points",
+        radius=particle_radius.numpy(),
+        colors=colors,
+        dynamic=True
+    )
+    renderer.end_frame()
+    renderer.update_view_matrix()
+
+    # --- Save if requested ---
+    if saveFlag:
+        save_grid_and_particles_vti_vtp(
+            output_prefix=f"./output/sim_step_{bigStep}_{counter:06d}",
+            grid_mass=grid_m.numpy(),
+            minBounds=minBounds,
+            dx=dx,
+            particle_positions=particle_x.numpy(),
+            particle_radius=np.arange(0, nPoints, 1)  # Point Gaussian trick
+        )
+
+    return maxStress  # so you can keep track of running maximum for von Mises
