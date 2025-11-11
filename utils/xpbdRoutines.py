@@ -151,7 +151,7 @@ def my_solve_particle_particle_contacts(
             delta = wp.vec3(0.0)
             alpha = 0.0 # XPBD compliance factor
             while wp.hash_grid_query_next(query, index):
-                if activeLabel[index]==1 and index != i and particle_mass[index] > 0.0:
+                if activeLabel[index]==1 and index != i and particle_mass[index] > 0.0: 
                     n = x - particle_x[index]
                     d = wp.length(n)
                     err = d - radius - particle_radius[index]
@@ -187,30 +187,69 @@ def my_apply_particle_deltas(
 ):
     tid = wp.tid()
     if activeLabel[tid]==1:
-        if materialLabel[tid] == 2:
-            x0 = x_orig[tid]
-            xp = x_pred[tid]
-            d = delta[tid]
-            # deal with exchange nans
-            if wp.isnan(d):
-                d[0]=0.0
-                d[1]=0.0
-                d[2]=0.0
-            
-            # suppress deltas from excessive overlaps
-            # if wp.length(d)>radius[tid]*0.01:
-            #     d=d/wp.length(d)*radius[tid]*0.01
-            # delta[tid]=d
+        x0 = x_orig[tid]
+        xp = x_pred[tid]
+        d = delta[tid]
+        # deal with exchange nans
+        if wp.isnan(d):
+            d[0]=0.0
+            d[1]=0.0
+            d[2]=0.0
+        
+        # suppress deltas from excessive overlaps
+        # if wp.length(d)>radius[tid]*0.01:
+        #     d=d/wp.length(d)*radius[tid]*0.01
+        # delta[tid]=d
 
-            x_new = xp + d
-            v_new = (x_new - x0) / dt
+        x_new = xp + d
+        v_new = (x_new - x0) / dt
 
-            v_new_mag = wp.length(v_new)
-            if v_new_mag > v_max:
-                v_new *= v_max / v_new_mag
+        v_new_mag = wp.length(v_new)
+        if v_new_mag > v_max:
+            v_new *= v_max / v_new_mag
+        # if materialLabel[tid] == 2:
+        x_out[tid] = x_new
+        v_out[tid] = v_new
 
-            x_out[tid] = x_new
-            v_out[tid] = v_new
+@wp.kernel
+def apply_mpm_contact_impulses(
+    activeLabel: wp.array(dtype=wp.int32),
+    materialLabel: wp.array(dtype=wp.int32),
+    x_orig: wp.array(dtype=wp.vec3),
+    v_orig: wp.array(dtype=wp.vec3),
+    x_final: wp.array(dtype=wp.vec3),
+    v_final: wp.array(dtype=wp.vec3),
+    dt: float,
+    v_max: float,
+    v_out: wp.array(dtype=wp.vec3),
+):
+    """
+    Post-convergence treatment for MPM particles:
+    Convert the converged XPBD position change into a velocity impulse
+    without actually changing the MPM particle position (MPM solver controls position).
+    
+    This preserves:
+    - XPBD convergence during iterations (all particles move)
+    - MPM position authority (grid solver controls position)
+    - Contact impulse transfer (velocity correction applied)
+    """
+    tid = wp.tid()
+    if activeLabel[tid] == 1 and materialLabel[tid] == 1:  # MPM particles only
+        # MPM velocity comes from grid (already has gravity applied)
+        # We only add the contact impulse from XPBD position correction
+        
+        # v_orig = MPM velocity from grid (includes gravity already)
+        # x_final - x_orig = contact-induced position change from XPBD
+        
+        v_from_grid = v_orig[tid]
+        contact_impulse = (x_final[tid] - x_orig[tid]) / dt
+        
+        v_corrected = v_from_grid + contact_impulse
+        v_mag = wp.length(v_corrected)
+        if v_mag > v_max:
+            v_corrected *= v_max / v_mag
+
+        v_out[tid] = v_corrected
 
 # TODO: in fs5, velocities arent zeroed on sleeping particles. in FS6, jury is still out.
 @wp.kernel

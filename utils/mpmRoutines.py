@@ -455,7 +455,11 @@ def drucker_prager_return_mapping(
             # initialPhaseChangeVelocity[p][0]=0.0
             # initialPhaseChangeVelocity[p][1]=0.0
             # initialPhaseChangeVelocity[p][2]=0.0
-            
+            # for ease of visualisation
+            yield_stress[p] = 0.0
+            mu[p] = 0.0
+            lam[p] = 0.0
+            alpha[p] = 0.0
             return F_trial
         
         # Plastic correction
@@ -675,18 +679,19 @@ def p2g_apic_with_stress(
     rpic_damping: float,
     grid_m: wp.array(dtype=float, ndim=3),
     grid_v_in: wp.array(dtype=wp.vec3, ndim=3),
-    dt: float):
+    dt: float,
+    xpbd_contact_threshold: float):  # Contact-aware coupling parameter (currently unused with mass-only approach)
     # input given to p2g:   particle_stress
     #                       particle_x
     #                       particle_v
     #                       particle_C
     p = wp.tid()
-    if activeLabel[p] == 1: # all materials contribute to the grid so that materials that rely on the grid can interact with other materials
-        
-        # xpbd particles contribute to the grid, but their velocities need to be clipped to prevent excessive stress at the interface upon phase change
+    if activeLabel[p] == 1 and materialLabel[p] ==1: # only mpm particles contribute to grid, xpbd particles do not pull on the grid - they transfer directly to mpm via contact forces
+    # if activeLabel[p] == 1: # all materials contribute to the grid so that materials that rely on the grid can interact with other materials
 
-
+        # xpbd particles contribute ONLY MASS
         material_id = materialLabel[p]  # Get the material ID of the current particle
+        is_xpbd = (material_id == 2)
         stress = particle_stress[p]
         grid_pos = (particle_x[p]-minBounds) * inv_dx
         base_pos_x = wp.int(grid_pos[0] - 0.5)
@@ -732,10 +737,18 @@ def p2g_apic_with_stress(
                         * (particle_v[p] + C * dpos)
                         + dt * elastic_force
                     )
+                    
+                    # XPBD: mass-only coupling (no velocity/momentum to prevent pulling)
+                    # Note: XPBD gravity is handled in separate XPBD solver, not here
+                    # Contact forces should be added separately via contact detection
+                    # if is_xpbd:
+                    #     wp.atomic_add(grid_m, ix, iy, iz, weight * particle_mass[p])
+                    #     # TODO: Add proper contact force when XPBD is in compression with MPM
+                    #     # This requires detecting contact state (compression vs separation)
+                    # else:
+                    # MPM: full momentum + stress transfer
                     wp.atomic_add(grid_v_in, ix, iy, iz, v_in_add)
-                    wp.atomic_add(
-                        grid_m, ix, iy, iz, weight * particle_mass[p]
-                    )
+                    wp.atomic_add(grid_m, ix, iy, iz, weight * particle_mass[p])
 
 
 @wp.kernel

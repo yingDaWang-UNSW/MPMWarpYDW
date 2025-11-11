@@ -300,7 +300,7 @@ def save_grid_and_particles_vti_vtp(
     print(f"Exported: {output_prefix}_grid.vti and {output_prefix}_particles.vtp")
 
 
-def render_and_save(
+def render_mpm(
     renderer,
     particle_x,
     particle_v,
@@ -397,8 +397,8 @@ def render_and_save(
         # pdb.set_trace()
         colors = values_to_rgb(
             effective_ys,
-            min_val=np.quantile(effective_ys, 0.01),
-            max_val=np.quantile(effective_ys, 0.99)+1
+            min_val=np.quantile(effective_ys, 0.1),
+            max_val=np.quantile(effective_ys, 0.9)+1
         )
 
     elif color_mode == "stress":
@@ -447,15 +447,39 @@ def render_and_save(
     renderer.end_frame()
     renderer.update_view_matrix()
 
-    # --- Save if requested ---
-    if saveFlag:
-        save_grid_and_particles_vti_vtp(
-            output_prefix=f"./output/sim_step_{bigStep}_{counter:06d}",
-            grid_mass=grid_m.numpy(),
-            minBounds=minBounds,
-            dx=dx,
-            particle_positions=particle_x.numpy(),
-            particle_radius=np.arange(0, nPoints, 1)  # Point Gaussian trick
-        )
-
     return maxStress  # so you can keep track of running maximum for von Mises
+
+
+
+def save_mpm(
+    outputFolder,
+    particle_x,
+    particle_v,
+    particle_radius,
+    ys,
+    ys_base,
+    alpha,
+    particle_damage,
+    particle_stress,
+    materialLabel,
+    grid_m,
+    minBounds,
+    dx,
+    bigStep,
+    counter,
+    nPoints,
+    color_mode="damage",
+):
+
+
+
+    # --- Save if requested ---
+    save_grid_and_particles_vti_vtp(
+        output_prefix=f"{outputFolder}./sim_step_{bigStep}{counter:06d}",
+        grid_mass=grid_m.numpy(),
+        minBounds=minBounds,
+        dx=dx,
+        particle_positions=particle_x.numpy(),
+        particle_radius=np.arange(0, nPoints, 1)  # Point Gaussian trick
+    )
+

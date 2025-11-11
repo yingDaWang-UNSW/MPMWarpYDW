@@ -45,13 +45,15 @@ domainFile = args.domainFile
 h5file = h5py.File(domainFile, "r")
 x, particle_volume = h5file["x"], h5file["particle_volume"]
 x = np.array(x).T
-x = x + np.random.rand(x.shape[0], x.shape[1])  # jitter to prevent stress chains
+# x = x + np.random.rand(x.shape[0], x.shape[1])*0.01 # jitter to prevent stress chains
+# delete the middle 20% of particles in z
+# x = x[~((x[:, 2] > np.percentile(x[:, 2], 40)) & (x[:, 2] < np.percentile(x[:, 2], 60)))]
 nPoints = x.shape[0]
 print(f"Number of particles: {nPoints}")
 
 minBounds = np.min(x, 0) - args.grid_padding
 maxBounds = np.max(x, 0) + args.grid_padding
-minBounds[2] = np.min(x, 0)[2] - 10
+minBounds[2] = np.min(x, 0)[2] - 6
 maxBounds[2] = np.max(x, 0)[2] + 2*args.grid_padding  # ensure z bounds are larger to avoid particles going out of bounds
 particleDiameter = np.mean(particle_volume) ** 0.33
 dx = particleDiameter * args.grid_particle_spacing_scale
@@ -77,12 +79,22 @@ ys = np.full(nPoints, args.ys, dtype=np.float32)
 # make ys at the bottom infinite
 ys[x[:, 2] < minBounds[2] + 0.1 * (maxBounds[2] - minBounds[2])] = 1e10
 
+# make ys higher at the outer edge of the domain
+radius = np.sqrt((x[:, 0]-np.mean(x[:, 0]))**2 + (x[:, 1]-np.mean(x[:, 1]))**2)
+ys += radius**5 * 1e3  # increase yield stress by 100000 Pa per meter of radius
+# make the bottom 20% material 2
+# but only the central 40% in the long direction
+ys[((x[:, 1] > np.percentile(x[:, 1], 30)) & (x[:, 1] < np.percentile(x[:, 1], 70))) & (x[:, 2] < np.percentile(x[:, 2], 20))] = 0
+
+
+
 hardening = np.full(nPoints, args.hardening, dtype=np.float32)
 softening = np.full(nPoints, args.softening, dtype=np.float32)
 eta_shear = np.full(nPoints, args.eta_shear, dtype=np.float32)
 eta_bulk = np.full(nPoints, args.eta_bulk, dtype=np.float32)
 
 materialLabel = np.ones(nPoints, dtype=np.int32)
+
 activeLabel = np.ones(nPoints, dtype=np.int32)
 
 # --- Constitutive model selection and parameters ---
@@ -95,6 +107,12 @@ gravity = wp.vec3(0.0, 0.0, args.gravity)
 boundFriction = args.boundFriction
 eff = args.eff
 strainCriteria = wp.full(nPoints, args.strainCriteria, dtype=wp.float32, device=device)
+
+# --- XPBD Contact Threshold (prevents XPBD "pulling" on MPM when separating) ---
+# -1e20: disabled (original behavior)
+# 0.0: only compression (XPBD only contributes when approaching)
+# >0.0: allow small separation velocity threshold
+xpbd_contact_threshold = getattr(args, 'xpbd_contact_threshold', -1e20)
 
 # --- Transfer to GPU ---
 yMod = wp.array(E, dtype=wp.float32, device=device)
@@ -147,12 +165,16 @@ particle_F_trial = wp.zeros(shape=nPoints, dtype=wp.mat33)
 # to represent the prestressed state. This way, elastic stress from F will
 # automatically include geostatic compression.
 g_mag = np.abs(args.gravity)  # Magnitude of gravity
-wp.launch(
-    kernel=mpmRoutines.initialize_geostatic_F,
-    dim=nPoints,
-    inputs=[particle_x, particle_F, mu, lam, particle_density, g_mag, z_top, K0],
-    device=device
-)
+wp.launch(kernel=mpmRoutines.set_mat33_to_identity,
+          dim=nPoints,
+          inputs=[particle_F],
+          device=device)
+# wp.launch(
+#     kernel=mpmRoutines.initialize_geostatic_F,
+#     dim=nPoints,
+#     inputs=[particle_x, particle_F, mu, lam, particle_density, g_mag, z_top, K0],
+#     device=device
+# )
 
 # Check if geostatic stress exceeds yield stress
 # Compute representative stress at mid-depth
@@ -198,14 +220,18 @@ particle_damage = wp.zeros(shape=nPoints, dtype=float, device=device)
 damagetemp=np.zeros(nPoints, dtype=np.float32)
 # make random damage
 np.random.seed(0)  # for reproducibility
-damagetemp = np.random.rand(nPoints).astype(np.float32) * 0.2  # random damage between 0 and 0.1
+damagetemp = np.random.rand(nPoints).astype(np.float32) * 0  # random damage between 0 and 0.1
 
 particle_damage = wp.array(damagetemp, dtype=float, device=device)
 
 particle_C = wp.zeros(shape=nPoints, dtype=wp.mat33)
 particle_init_cov = wp.zeros(shape=nPoints * 6, dtype=float, device=device)
 particle_cov = wp.zeros(shape=nPoints * 6, dtype=float, device=device)
-particle_radius = wp.array(particle_vol.numpy()**(1/3)*np.pi/6*0.95)
+# radius for material 2 is 0.8* normal
+particle_radius = np.array(particle_vol.numpy()**(1/3)*np.pi/6)
+# particle_radius[materialLabel.numpy() == 2] = 0.5 * particle_radius[materialLabel.numpy() == 2]
+# particle_radius[materialLabel.numpy() == 1] = particle_radius[materialLabel.numpy() == 1]
+particle_radius = wp.array(particle_radius, dtype=float, device=device)
 
 # --- Grid arrays ---
 grid_m = wp.zeros(shape=gridDims, dtype=float, device=device)
@@ -218,7 +244,13 @@ maxBounds = wp.vec3(*maxBounds)
 particle_x_initial_xpbd = wp.zeros(shape=nPoints, dtype=wp.vec3)
 particle_x_initial_xpbd.fill_([1e6, 1e6, 1e6])
 particle_v_initial_xpbd = wp.zeros(shape=nPoints, dtype=wp.vec3)
-particle_cumDist_xpbd = wp.zeros(shape=nPoints, dtype=float)
+particle_cumDist_xpbd = np.zeros(shape=nPoints, dtype=float)
+# particle_cumDist_xpbd[materialLabel.numpy() == 2] = 0.0
+particle_cumDist_xpbd = wp.array(particle_cumDist_xpbd, dtype=float, device=device)
+
+# particles already material type 2 have large arbitrary distance
+particle_distance_total = wp.zeros(shape=nPoints, dtype=float)
+
 particle_x_integrated = wp.zeros(shape=nPoints, dtype=wp.vec3)
 particle_v_integrated = wp.zeros(shape=nPoints, dtype=wp.vec3)
 particle_x_deltaInt = wp.zeros(shape=nPoints, dtype=wp.vec3)
@@ -350,6 +382,7 @@ for bigStep in range(0, bigSteps):
             device,
             constitutive_model,
             alpha,
+            xpbd_contact_threshold,  # Contact-aware coupling control
         )
         # perform the xpbd step if timestep has reached the threshold
         if np.mod(counter, mpmStepsPerXpbdStep) == 0 and counter>0:
@@ -419,31 +452,27 @@ for bigStep in range(0, bigSteps):
         residualCPU = residual.numpy()[0]/numActiveParticles.numpy()[0]
         t=t+dt
         counter=counter+1
-        if np.mod(counter,100)==0:
-            # # Compute current stress statistics
-            # stress_cpu = particle_stress.numpy()
-            # # Extract vertical stress component (σ_zz = stress[2,2])
-            # sigma_zz = stress_cpu[:, 2, 2]
-            # mean_sigma_zz = np.mean(sigma_zz)
+        if np.mod(counter,1000)==0:
+            # DIAGNOSTIC: Check velocities and positions
+            particle_v_cpu = particle_v.numpy()
+            particle_x_cpu = particle_x.numpy()
+            mpm_mask = materialLabel.numpy() == 1
+            xpbd_mask = materialLabel.numpy() == 2
             
-            # # Compute actual vertical pressure gradient from particle stresses
-            # particle_x_cpu = particle_x.numpy()
-            # z_coords = particle_x_cpu[:, 2]
-            # z_range = np.max(z_coords) - np.min(z_coords)
+            if np.any(mpm_mask):
+                mpm_vz = particle_v_cpu[mpm_mask, 2]
+                mpm_z = particle_x_cpu[mpm_mask, 2]
+                print(f'MPM:  mean vz={np.mean(mpm_vz):.3f} m/s, mean z={np.mean(mpm_z):.2f} m')
             
-            # # Fit linear gradient: σ_zz vs depth
-            # if z_range > 1e-6:
-            #     depth_from_top = z_top - z_coords
-            #     gradient_fit = np.polyfit(depth_from_top, sigma_zz, 1)
-            #     measured_gradient = gradient_fit[0]  # Pa/m
-            # else:
-            #     measured_gradient = 0.0
+            if np.any(xpbd_mask):
+                xpbd_vz = particle_v_cpu[xpbd_mask, 2]
+                xpbd_z = particle_x_cpu[xpbd_mask, 2]
+                print(f'XPBD: mean vz={np.mean(xpbd_vz):.3f} m/s, mean z={np.mean(xpbd_z):.2f} m')
             
             print(f'Step: {counter}, simulationTime: {t:.4f}s, deltaTime: +{time.time()-stepStartTime:.4f}s, realTime: {time.time()-startTime:.4f}s, residual: {residualCPU:.4e}, mean accumulated plastic strain: {np.mean(particle_accumulated_strain.numpy()):.4f}, active particles: {numActiveParticles.numpy()[0]}')
-            # print(f'  Mean σ_zz: {mean_sigma_zz:.2e} Pa, Measured dσ_v/dz: {measured_gradient:.2e} Pa/m (expected: {args.density * g_mag:.2e} Pa/m)')
             
             if render:
-                maxStress = fs5PlotUtils.render_and_save(
+                maxStress = fs5PlotUtils.render_mpm(
                     renderer,
                     particle_x,
                     particle_v,
@@ -464,20 +493,40 @@ for bigStep in range(0, bigSteps):
                     color_mode=args.color_mode,   # or "von_mises", "damage", "vz"
                     maxStress=maxStress
                 )
+            if saveFlag:
+                fs5PlotUtils.save_mpm(
+                    args.outputFolder,
+                    particle_x,
+                    particle_v,
+                    particle_radius,
+                    ys,
+                    ys_base,
+                    alpha,
+                    particle_damage,
+                    particle_stress,
+                    materialLabel,
+                    grid_m,
+                    minBounds,
+                    dx,
+                    bigStep,
+                    counter,
+                    nPoints,
+                    color_mode=args.color_mode,   # or "von_mises", "damage", "vz"
+                )
     # when convergence is reached, reduce the yield stress by 10% to mimic creep over a long time TODO: the creep should be a function of damage in some spatially varying way 
 
-    wp.launch(
-        kernel=mpmRoutines.creep_by_damage_with_baseline,
-        dim=nPoints,
-        inputs=[
-            materialLabel,
-            particle_damage,
-            ys,
-            ys_base,
-            counter*dt,         # or dt * mpmStepsPerXpbdStep
-            0.0,           # base creep rate A_base (undamaged)
-            0.0,           # damage-based creep A_damage
-            1.5             # damage exponent beta
-        ],
-        device=device
-    )
+    # wp.launch(
+    #     kernel=mpmRoutines.creep_by_damage_with_baseline,
+    #     dim=nPoints,
+    #     inputs=[
+    #         materialLabel,
+    #         particle_damage,
+    #         ys,
+    #         ys_base,
+    #         counter*dt,         # or dt * mpmStepsPerXpbdStep
+    #         0.0,           # base creep rate A_base (undamaged)
+    #         0.0,           # damage-based creep A_damage
+    #         1.5             # damage exponent beta
+    #     ],
+    #     device=device
+    # )

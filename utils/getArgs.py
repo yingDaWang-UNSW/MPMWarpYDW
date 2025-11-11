@@ -35,6 +35,7 @@ def get_args():
     parser.add_argument("--render", type=int, default=0, help="Enable rendering")
     parser.add_argument("--color_mode", type=str, default="effective_ys", help="Color mode for rendering")
     parser.add_argument("--saveFlag", type=int, default=0, help="Enable saving simulation results")
+    parser.add_argument("--outputFolder", type=str, default="./output/", help="Output folder for simulation results")
 
     # Domain & grid
     parser.add_argument("--domainFile", type=str, default="./exampleDomains/annular_arch_particles.h5", help="Input HDF5 domain file")
@@ -79,6 +80,11 @@ def get_args():
     parser.add_argument("--xpbd_iterations", type=int, default=4, help="Number of XPBD solver iterations")
     parser.add_argument("--particle_cohesion", type=float, default=0.0, help="Cohesion for XPBD particles")
     parser.add_argument("--sleepThreshold", type=float, default=0.5, help="Sleep threshold for XPBD")
+    
+    # MPM-XPBD coupling
+    parser.add_argument("--xpbd_contact_threshold", type=float, default=-1e20, 
+                        help="XPBD contact coupling threshold (m/s). -1e20=disabled (always couple), 0=compression only, >0=allow some separation")
+
 
     # Swelling
     parser.add_argument("--swellingRatio", type=float, default=0.2, help="Particle swelling ratio")
@@ -94,10 +100,23 @@ def get_args():
         with open(pre_args.config, "r") as f:
             config_data = json.load(f)
 
-    # Parse CLI (CLI overrides config file)
-    args = parser.parse_args()
+    # Parse CLI arguments first to detect which were explicitly provided
+    # Use parse_known_args to handle unknown keys in JSON gracefully
+    args, unknown = parser.parse_known_args()
+    
+    # Track which arguments were explicitly set on command line
+    # by comparing sys.argv to see what was actually provided
+    import sys
+    cli_args_set = set()
+    for i, arg in enumerate(sys.argv[1:]):
+        if arg.startswith('--'):
+            # Extract the argument name (remove leading --)
+            arg_name = arg.lstrip('-').replace('-', '_')
+            cli_args_set.add(arg_name)
+    
+    # Apply config file values only if NOT overridden by CLI
     for k, v in config_data.items():
-        if getattr(args, k, None) == parser.get_default(k):  # only replace if not overridden
+        if k not in cli_args_set and hasattr(args, k):
             setattr(args, k, v)
 
     # Pretty-print final merged config

@@ -76,6 +76,7 @@ def mpmSimulationStep(
     device,
     constitutive_model,
     alpha,
+    xpbd_contact_threshold=-1e20,  # New param: negative = disabled, 0 = compression only
 ):
     """
     Perform one MPM simulation step (stress update, P2G, grid ops, G2P).
@@ -136,7 +137,8 @@ def mpmSimulationStep(
             rpic_damping,
             grid_m,
             grid_v_in,
-            dt
+            dt,
+            xpbd_contact_threshold  # Contact-aware coupling parameter
         ],
         device=device
     )
@@ -371,25 +373,40 @@ def xpbdSimulationStep(
         ], 
         device=device
     )
-
+    wp.launch(
+        kernel=xpbdRoutines.apply_mpm_contact_impulses,
+        dim=nPoints,
+        inputs=[
+            activeLabel,
+            materialLabel,
+            particle_x,  # Original MPM positions
+            particle_v,
+            particle_x_integrated,  # Converged XPBD positions
+            particle_v_integrated,  # Velocities from convergence
+            dtxpbd,
+            particle_v_max
+        ],
+        outputs=[particle_v_integrated],  # Update velocities only
+        device=device,
+    )
     # Commit integrated positions/velocities
     particle_x.assign(particle_x_integrated)
     particle_v.assign(particle_v_integrated)
 
     # Clip particle velocities to avoid over-explosion
-    wp.launch(
-        kernel=xpbdRoutines.clipParticleVelocitiesOnPhaseChange, 
-        dim=nPoints, 
-        inputs=[
-            activeLabel,
-            materialLabel,
-            particle_cumDist_xpbd, 
-            particle_v_initial_xpbd, 
-            particle_v, 
-            particle_radius
-        ], 
-        device=device
-    )
+    # wp.launch(
+    #     kernel=xpbdRoutines.clipParticleVelocitiesOnPhaseChange, 
+    #     dim=nPoints, 
+    #     inputs=[
+    #         activeLabel,
+    #         materialLabel,
+    #         particle_cumDist_xpbd, 
+    #         particle_v_initial_xpbd, 
+    #         particle_v, 
+    #         particle_radius
+    #     ], 
+    #     device=device
+    # )
 
     # Swelling (optional)
     if swellingRatio > 0:

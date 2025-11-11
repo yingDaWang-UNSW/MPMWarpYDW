@@ -8,3 +8,4 @@ output/*
 *pyc
 *.mp4
 .vscode*
+benchmarks/generalBenchmark/output*
