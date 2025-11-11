@@ -307,8 +307,10 @@ def render_and_save(
     particle_radius,
     ys,
     ys_base,
+    alpha,
     particle_damage,
     particle_stress,
+    materialLabel,
     grid_m,
     minBounds,
     dx,
@@ -316,7 +318,7 @@ def render_and_save(
     counter,
     nPoints,
     saveFlag=False,
-    color_mode="yield_ratio",
+    color_mode="damage",
     maxStress=None
 ):
     """
@@ -340,7 +342,10 @@ def render_and_save(
     nPoints : int
     saveFlag : bool
     color_mode : str
-        Options: "yield_ratio", "damage", "vz", "von_mises"
+        Options: "yield_ratio", "damage", "vz", "von_mises", "stress", "sigma_zz"
+        Note: "von_mises" shows deviatoric stress (shape change) - looks uniform under geostatic loading
+              "sigma_zz" shows vertical stress component - displays geostatic gradient
+              "stress" shows mean stress (pressure)
     maxStress : float or None
         If color_mode="von_mises", this is the running max for normalization.
     """
@@ -376,12 +381,56 @@ def render_and_save(
         von_mises = np.sqrt(1.5 * np.sum(s**2, axis=(1, 2)))
 
         if maxStress is None:
-            maxStress = np.max(von_mises)
+            maxStress = np.quantile(von_mises, 0.95)
 
         colors = values_to_rgb(
             von_mises,
             min_val=0.0,
             max_val=maxStress
+        )
+
+    elif color_mode == "effective_ys":
+        sigma = particle_stress.numpy().astype(np.float64)  # (N,3,3)
+        mean_stress = np.trace(sigma, axis1=1, axis2=2) / 3.0
+        effective_ys = (ys.numpy() - alpha.numpy() * mean_stress)*(1-particle_damage.numpy())
+        # import pdb
+        # pdb.set_trace()
+        colors = values_to_rgb(
+            effective_ys,
+            min_val=np.quantile(effective_ys, 0.01),
+            max_val=np.quantile(effective_ys, 0.99)+1
+        )
+
+    elif color_mode == "stress":
+        sigma = particle_stress.numpy().astype(np.float64)  # (N,3,3)
+        mean_stress = np.trace(sigma, axis1=1, axis2=2) / 3.0
+        # Use absolute value so compression (negative) maps correctly
+        # Larger compression magnitude → hotter color
+        mean_stress_abs = np.abs(mean_stress)
+        colors = values_to_rgb(
+            mean_stress_abs,
+            min_val=0.0,  # No stress
+            max_val=np.quantile(mean_stress_abs, 0.99)  # Maximum compression
+        )
+    
+    elif color_mode == "sigma_zz":
+        # Vertical stress component - shows geostatic gradient
+        # Use absolute value: larger compression magnitude → hotter color
+        sigma = particle_stress.numpy().astype(np.float64)  # (N,3,3)
+        sigma_zz = sigma[:, 2, 2]  # Vertical component (negative = compression)
+        sigma_zz_abs = np.abs(sigma_zz)
+        colors = values_to_rgb(
+            sigma_zz_abs,
+            min_val=0.0,  # No stress (surface)
+            max_val=np.quantile(sigma_zz_abs, 0.99)  # Maximum compression (bottom)
+        )
+    
+    elif color_mode == "state":
+        sigma = materialLabel.numpy().astype(np.float64)  # (N,3,3)
+        colors = values_to_rgb(
+            sigma,
+            min_val=0.0,
+            max_val=np.max(sigma)
         )
     else:
         raise ValueError(f"Unknown color_mode: {color_mode}")

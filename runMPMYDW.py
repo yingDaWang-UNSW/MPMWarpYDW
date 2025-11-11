@@ -20,14 +20,18 @@ dt = args.dt
 dtxpbd = args.dtxpbd
 mpmStepsPerXpbdStep = int(dtxpbd / dt)
 nSteps = args.nSteps
+bigSteps = args.bigSteps
+residualThreshold = args.residualThreshold
 
-print(f"Running simulation with dt={dt}, dtxpbd={dtxpbd}, nSteps={nSteps}")
+print(f"Running simulation with dt={dt}, dtxpbd={dtxpbd}, nSteps={nSteps}, bigSteps={bigSteps}, residualThreshold={residualThreshold}")
 
 # --- Simulation parameters ---
 dt = args.dt
 dtxpbd = args.dtxpbd
 mpmStepsPerXpbdStep = int(dtxpbd / dt)
 nSteps = args.nSteps
+bigSteps = args.bigSteps
+residualThreshold = args.residualThreshold
 
 rpic_damping = args.rpic_damping
 grid_v_damping_scale = args.grid_v_damping_scale
@@ -41,7 +45,7 @@ domainFile = args.domainFile
 h5file = h5py.File(domainFile, "r")
 x, particle_volume = h5file["x"], h5file["particle_volume"]
 x = np.array(x).T
-# x = x + np.random.rand(x.shape[0], x.shape[1])  # jitter to prevent stress chains
+x = x + np.random.rand(x.shape[0], x.shape[1])  # jitter to prevent stress chains
 nPoints = x.shape[0]
 print(f"Number of particles: {nPoints}")
 
@@ -67,11 +71,11 @@ density = np.full(nPoints, args.density, dtype=np.float32)
 E = np.full(nPoints, args.E, dtype=np.float32)
 nu = np.full(nPoints, args.nu, dtype=np.float32)
 
-# ys = np.full(nPoints, args.ys, dtype=np.float32)
-# # make ys lower at the top of the domain quadratically
+ys = np.full(nPoints, args.ys, dtype=np.float32)
+# make ys lower at the top of the domain quadratically
 # ys = ys * (1 - (x[:, 2] - minBounds[2]) / (maxBounds[2] - minBounds[2]))**3
-# # make ys at the bottom infinite
-# ys[x[:, 2] < minBounds[2] + 0.1 * (maxBounds[2] - minBounds[2])] = 1e10
+# make ys at the bottom infinite
+ys[x[:, 2] < minBounds[2] + 0.1 * (maxBounds[2] - minBounds[2])] = 1e10
 
 hardening = np.full(nPoints, args.hardening, dtype=np.float32)
 softening = np.full(nPoints, args.softening, dtype=np.float32)
@@ -80,6 +84,11 @@ eta_bulk = np.full(nPoints, args.eta_bulk, dtype=np.float32)
 
 materialLabel = np.ones(nPoints, dtype=np.int32)
 activeLabel = np.ones(nPoints, dtype=np.int32)
+
+# --- Constitutive model selection and parameters ---
+constitutive_model = args.constitutive_model
+alpha = args.alpha
+K0 = args.K0
 
 # --- Gravity, boundary, coupling ---
 gravity = wp.vec3(0.0, 0.0, args.gravity)
@@ -99,9 +108,12 @@ wp.launch(kernel=mpmRoutines.compute_mu_lam_bulk_from_E_nu,
           outputs=[mu, lam, bulk],
           device=device)
 
-# ys_base = ys.copy()  # keep a copy of the base yield stress for creep calculations`
-# ys_base = wp.array(ys_base, dtype=wp.float32, device=device)
-# ys = wp.array(ys, dtype=wp.float32, device=device)
+# Create Drucker-Prager parameter arrays
+alpha = wp.full(nPoints, alpha, dtype=wp.float32, device=device)
+
+ys_base = ys.copy()  # keep a copy of the base yield stress for creep calculations`
+ys_base = wp.array(ys_base, dtype=wp.float32, device=device)
+ys = wp.array(ys, dtype=wp.float32, device=device)
 materialLabel = wp.array(materialLabel, dtype=wp.int32, device=device)
 activeLabel = wp.array(activeLabel, dtype=wp.int32, device=device)
 particle_density = wp.array(density, dtype=wp.float32, device=device)
@@ -120,18 +132,76 @@ wp.launch(kernel=mpmRoutines.get_float_array_product,
           inputs=[particle_density, particle_vol, particle_mass],
           device=device)
 
+# Compute z_top for geostatic stress if not provided
+if args.z_top is None:
+    z_top = float(np.max(x[:, 2]))  # Use max z-coordinate of particles
+else:
+    z_top = args.z_top
+
 particle_v = wp.zeros(shape=nPoints, dtype=wp.vec3)
 particle_F = wp.zeros(shape=nPoints, dtype=wp.mat33)
 particle_F_trial = wp.zeros(shape=nPoints, dtype=wp.mat33)
-wp.launch(kernel=mpmRoutines.set_mat33_to_identity,
+
+# === Initialize geostatic deformation gradient ===
+# Instead of initializing stress (which gets overwritten), we initialize F
+# to represent the prestressed state. This way, elastic stress from F will
+# automatically include geostatic compression.
+g_mag = np.abs(args.gravity)  # Magnitude of gravity
+wp.launch(
+    kernel=mpmRoutines.initialize_geostatic_F,
+    dim=nPoints,
+    inputs=[particle_x, particle_F, mu, lam, particle_density, g_mag, z_top, K0],
+    device=device
+)
+
+# Check if geostatic stress exceeds yield stress
+# Compute representative stress at mid-depth
+mid_depth = (z_top - np.min(x[:, 2])) / 2.0
+sigma_v_mid = args.density * g_mag * mid_depth
+sigma_h_mid = K0 * sigma_v_mid
+
+# Compute vertical pressure gradient
+domain_height = z_top - np.min(x[:, 2])
+sigma_v_bottom = args.density * g_mag * domain_height
+sigma_v_top = 0.0  # No overburden at surface
+vertical_gradient = (sigma_v_bottom - sigma_v_top) / domain_height if domain_height > 0 else 0.0
+
+# Von Mises equivalent for geostatic state: sqrt(3/2 * |s|^2) where s is deviatoric
+# For σ_h = σ_h, σ_v: mean = (2σ_h + σ_v)/3, deviatoric: s_h = σ_h - mean, s_v = σ_v - mean
+mean_stress = (2*sigma_h_mid + sigma_v_mid) / 3.0
+s_h = sigma_h_mid - mean_stress
+s_v = sigma_v_mid - mean_stress
+von_mises_geostatic = np.sqrt(1.5 * (2*s_h**2 + s_v**2))
+
+print(f"Initialized geostatic deformation gradient (z_top={z_top:.2f}, K0={K0:.2f})")
+print(f"  Domain height: {domain_height:.2f} m")
+print(f"  Vertical pressure gradient: dσ_v/dz = {vertical_gradient:.2e} Pa/m (= ρg = {args.density * g_mag:.2e} Pa/m)")
+print(f"  Stress at bottom: σ_v={sigma_v_bottom:.2e} Pa, σ_h={K0*sigma_v_bottom:.2e} Pa")
+print(f"  Mid-depth stress: σ_v={sigma_v_mid:.2e} Pa, σ_h={sigma_h_mid:.2e} Pa")
+print(f"  Von Mises equivalent (mid-depth): {von_mises_geostatic:.2e} Pa")
+print(f"  Yield stress: {args.ys:.2e} Pa")
+if von_mises_geostatic > args.ys:
+    print(f"     WARNING: Geostatic stress ({von_mises_geostatic:.2e}) > Yield stress ({args.ys:.2e})")
+    print(f"     Material will plastically yield! Increase yield stress or reduce K0.")
+
+# Copy F to F_trial for first step
+wp.launch(kernel=mpmRoutines.set_mat33_to_copy,
           dim=nPoints,
-          inputs=[particle_F_trial],
+          inputs=[particle_F, particle_F_trial],
           device=device)
 
 particle_stress = wp.zeros(shape=nPoints, dtype=wp.mat33)
 
 particle_accumulated_strain = wp.zeros(shape=nPoints, dtype=float, device=device)
 particle_damage = wp.zeros(shape=nPoints, dtype=float, device=device)
+
+damagetemp=np.zeros(nPoints, dtype=np.float32)
+# make random damage
+np.random.seed(0)  # for reproducibility
+damagetemp = np.random.rand(nPoints).astype(np.float32) * 0.2  # random damage between 0 and 0.1
+
+particle_damage = wp.array(damagetemp, dtype=float, device=device)
+
 particle_C = wp.zeros(shape=nPoints, dtype=wp.mat33)
 particle_init_cov = wp.zeros(shape=nPoints * 6, dtype=float, device=device)
 particle_cov = wp.zeros(shape=nPoints * 6, dtype=float, device=device)
@@ -183,7 +253,6 @@ maxBoundsXPBD = wp.vec3(maxBounds[0] - padding * dx, maxBounds[1] - padding * dx
 # xpbdParticleCount = np.sum(materialLabel.numpy() == 2) # count of xpbd particles, i.e. particles with material label 2
 #BOUNDARY CONDITIONS (DO THIS LATER)###############################################################################################################################
 
-
 if render:
     # initialise renderer
     renderer = fs5RendererCore.OpenGLRenderer(        
@@ -212,76 +281,14 @@ if render:
     maxStress=0.0
     maxStrain=0.0
 
-# run a geostatic simulation to settle the particles under gravity - just need to make ys infinite
-ys = np.full(nPoints, 1e10, dtype=np.float32)  # set yield stress to a very high value to simulate geostatic conditions
-ys_base = ys.numpy().copy()  # keep a copy of the base yield stress for creep calculations
-ys_base = wp.array(ys_base, dtype=wp.float32, device=device)
-ys = wp.array(ys, dtype=wp.float32, device=device)
+# compute the geostatic stress for yz calculation - do not apply in simulation - material is 
 
-for n in range(1e5):
-    print(f"Running static initialiser {n+1}")
+# ys = np.full(nPoints, 1e10, dtype=np.float32)  # set yield stress to a very high value to simulate geostatic conditions
+# ys_base = ys.copy()  # keep a copy of the base yield stress for creep calculations
+# ys_base = wp.array(ys_base, dtype=wp.float32, device=device)
+# ys = wp.array(ys, dtype=wp.float32, device=device)
 
-    simulationRoutines.mpmSimulationStep(
-        particle_x,
-        particle_v,
-        particle_x_initial_xpbd,
-        particle_v_initial_xpbd,
-        particle_F,
-        particle_F_trial,
-        particle_stress,
-        particle_accumulated_strain,
-        particle_damage,
-        particle_C,
-        particle_vol,
-        particle_mass,
-        particle_density,
-        particle_cov,
-        activeLabel,
-        materialLabel,
-        mu,
-        lam,
-        ys,
-        hardening,
-        softening,
-        strainCriteria,
-        eta_shear,
-        eta_bulk,
-        eff,
-        dx,
-        invdx,
-        minBounds,
-        rpic_damping,
-        dt,
-        gravity,
-        grid_m,
-        grid_v_in,
-        grid_v_out,
-        gridDims,
-        grid_v_damping_scale,
-        boundFriction,
-        update_cov,
-        nPoints,
-        device
-    )
-    maxStress = fs5PlotUtils.render_and_save(
-        renderer,
-        particle_x,
-        particle_v,
-        particle_radius,
-        ys,
-        ys_base,
-        particle_damage,
-        particle_stress,
-        grid_m,
-        minBounds,
-        dx,
-        0,
-        0,
-        nPoints,
-        saveFlag=False,
-        color_mode="von_mises",   # or "von_mises", "damage", "vz"
-        maxStress=maxStress
-    )
+
 
 
 residual = wp.array([1e10], dtype=float, device=device)  # residual for velocity convergence
@@ -289,13 +296,13 @@ numActiveParticles = wp.array([0], dtype=wp.int32, device=device)  # number of a
 
 t=0
 startTime=time.time()
-for bigStep in range(0, 100):
-    print(f"Starting big step {bigStep+1} of 100, meanys: {np.mean(ys.numpy()):.2f}")
+for bigStep in range(0, bigSteps):
+    print(f"Starting big step {bigStep+1} of {bigSteps}, meanys: {np.mean(ys.numpy()):.2f}")
 
     counter=0
     residualCPU=1e10
     minSteps = 1000  # minimum steps to ensure initial conditions are met
-    while counter < nSteps and (counter < minSteps or residualCPU > 5e-1):
+    while counter < nSteps and (counter < minSteps or residualCPU > residualThreshold):
         stepStartTime = time.time()
         residual.zero_()  # reset residual at each step
         numActiveParticles.zero_()  # reset active particle count at each step
@@ -340,7 +347,9 @@ for bigStep in range(0, 100):
             boundFriction,
             update_cov,
             nPoints,
-            device
+            device,
+            constitutive_model,
+            alpha,
         )
         # perform the xpbd step if timestep has reached the threshold
         if np.mod(counter, mpmStepsPerXpbdStep) == 0 and counter>0:
@@ -411,7 +420,28 @@ for bigStep in range(0, 100):
         t=t+dt
         counter=counter+1
         if np.mod(counter,100)==0:
+            # # Compute current stress statistics
+            # stress_cpu = particle_stress.numpy()
+            # # Extract vertical stress component (σ_zz = stress[2,2])
+            # sigma_zz = stress_cpu[:, 2, 2]
+            # mean_sigma_zz = np.mean(sigma_zz)
+            
+            # # Compute actual vertical pressure gradient from particle stresses
+            # particle_x_cpu = particle_x.numpy()
+            # z_coords = particle_x_cpu[:, 2]
+            # z_range = np.max(z_coords) - np.min(z_coords)
+            
+            # # Fit linear gradient: σ_zz vs depth
+            # if z_range > 1e-6:
+            #     depth_from_top = z_top - z_coords
+            #     gradient_fit = np.polyfit(depth_from_top, sigma_zz, 1)
+            #     measured_gradient = gradient_fit[0]  # Pa/m
+            # else:
+            #     measured_gradient = 0.0
+            
             print(f'Step: {counter}, simulationTime: {t:.4f}s, deltaTime: +{time.time()-stepStartTime:.4f}s, realTime: {time.time()-startTime:.4f}s, residual: {residualCPU:.4e}, mean accumulated plastic strain: {np.mean(particle_accumulated_strain.numpy()):.4f}, active particles: {numActiveParticles.numpy()[0]}')
+            # print(f'  Mean σ_zz: {mean_sigma_zz:.2e} Pa, Measured dσ_v/dz: {measured_gradient:.2e} Pa/m (expected: {args.density * g_mag:.2e} Pa/m)')
+            
             if render:
                 maxStress = fs5PlotUtils.render_and_save(
                     renderer,
@@ -420,8 +450,10 @@ for bigStep in range(0, 100):
                     particle_radius,
                     ys,
                     ys_base,
+                    alpha,
                     particle_damage,
                     particle_stress,
+                    materialLabel,
                     grid_m,
                     minBounds,
                     dx,
@@ -429,7 +461,7 @@ for bigStep in range(0, 100):
                     counter,
                     nPoints,
                     saveFlag=saveFlag,
-                    color_mode="yield_ratio",   # or "von_mises", "damage", "vz"
+                    color_mode=args.color_mode,   # or "von_mises", "damage", "vz"
                     maxStress=maxStress
                 )
     # when convergence is reached, reduce the yield stress by 10% to mimic creep over a long time TODO: the creep should be a function of damage in some spatially varying way 
@@ -443,8 +475,8 @@ for bigStep in range(0, 100):
             ys,
             ys_base,
             counter*dt,         # or dt * mpmStepsPerXpbdStep
-            0,           # base creep rate A_base (undamaged)
-            2e-0,           # damage-based creep A_damage
+            0.0,           # base creep rate A_base (undamaged)
+            0.0,           # damage-based creep A_damage
             1.5             # damage exponent beta
         ],
         device=device

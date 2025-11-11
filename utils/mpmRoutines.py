@@ -29,6 +29,10 @@ def initialize_geostatic_stress(
     z_top: float,
     K0: float
 ):
+    """
+    DEPRECATED: This initializes stress but it gets overwritten by compute_stress_from_F_trial.
+    Use initialize_geostatic_F instead to modify the deformation gradient.
+    """
     tid = wp.tid()
     z = particle_x[tid][2]
     depth = z_top - z  # distance below the top surface
@@ -41,6 +45,82 @@ def initialize_geostatic_stress(
         sig_xx, 0.0, 0.0,
         0.0, sig_yy, 0.0,
         0.0, 0.0, sig_zz
+    )
+
+
+@wp.kernel
+def initialize_geostatic_F(
+    particle_x: wp.array(dtype=wp.vec3),
+    particle_F: wp.array(dtype=wp.mat33),
+    mu: wp.array(dtype=float),
+    lam: wp.array(dtype=float),
+    density: wp.array(dtype=float),
+    gravity: float,
+    z_top: float,
+    K0: float
+):
+    """
+    Initialize deformation gradient F to represent geostatic stress state.
+    
+    For an isotropic elastic material under geostatic stress:
+    σ_v = ρgh (vertical)
+    σ_h = K0 * σ_v (horizontal)
+    
+    We compute the strain that would produce this stress, then F = exp(ε).
+    This way, the material "remembers" it's prestressed.
+    """
+    tid = wp.tid()
+    z = particle_x[tid][2]
+    depth = z_top - z
+    
+    # Target stresses (Kirchhoff stress for small strain ≈ Cauchy stress)
+    # Compression = negative, so σ_v = -ρgh (negative at depth)
+    sigma_v = -density[tid] * gravity * depth
+    sigma_h = K0 * sigma_v
+    
+    # For linear elasticity: σ = λ*tr(ε)*I + 2μ*ε
+    # Solve for strains given target stresses (σ_xx = σ_yy = σ_h, σ_zz = σ_v)
+    # σ_h = λ*(ε_xx + ε_yy + ε_zz) + 2μ*ε_xx
+    # σ_h = λ*(ε_xx + ε_yy + ε_zz) + 2μ*ε_yy
+    # σ_v = λ*(ε_xx + ε_yy + ε_zz) + 2μ*ε_zz
+    
+    # Assuming ε_xx = ε_yy (horizontal isotropy):
+    # σ_h = λ*(2ε_h + ε_v) + 2μ*ε_h
+    # σ_v = λ*(2ε_h + ε_v) + 2μ*ε_v
+    
+    # Solve this 2x2 system:
+    mu_p = mu[tid]
+    lam_p = lam[tid]
+    
+    # Coefficient matrix for [ε_h, ε_v]:
+    # [2λ + 2μ,    λ   ] [ε_h]   [σ_h]
+    # [2λ,       λ + 2μ] [ε_v] = [σ_v]
+    
+    a11 = 2.0 * lam_p + 2.0 * mu_p
+    a12 = lam_p
+    a21 = 2.0 * lam_p
+    a22 = lam_p + 2.0 * mu_p
+    
+    det = a11 * a22 - a12 * a21
+    
+    if wp.abs(det) > 1e-12:
+        # Cramer's rule
+        eps_h = (sigma_h * a22 - sigma_v * a12) / det
+        eps_v = (a11 * sigma_v - a21 * sigma_h) / det
+    else:
+        eps_h = 0.0
+        eps_v = 0.0
+    
+    # Logarithmic strain (since we use multiplicative elastoplasticity)
+    # F = exp(ε) for small strain, or for diagonal ε:
+    F_xx = wp.exp(eps_h)
+    F_yy = wp.exp(eps_h)
+    F_zz = wp.exp(eps_v)
+    
+    particle_F[tid] = wp.mat33(
+        F_xx, 0.0, 0.0,
+        0.0, F_yy, 0.0,
+        0.0, 0.0, F_zz
     )
 
 
@@ -90,31 +170,56 @@ def compute_stress_from_F_trial(
     particle_C: wp.array(dtype=wp.mat33),
     particle_stress: wp.array(dtype=wp.mat33), 
     particle_accumulated_strain: wp.array(dtype=float),
-    particle_damage: wp.array(dtype=float)
+    particle_damage: wp.array(dtype=float),
+    constitutive_model: int,
+    alpha: wp.array(dtype=float),
 ):
     p = wp.tid()
     # apply return mapping on mpm active particles
     if materialLabel[p] == 1:
         if activeLabel[p] == 1:
-            particle_F[p] = von_mises_return_mapping_with_damage_YDW(
-                particle_F_trial[p], 
-                particlePosition,
-                particleVelocity,
-                initialPhaseChangePosition,
-                initialPhaseChangeVelocity,
-                materialLabel,
-                particle_accumulated_strain,
-                particle_damage,
-                mu,
-                lam,
-                yield_stress,
-                hardening,
-                softening, 
-                particle_density,
-                strainCriteria,
-                efficiency,
-                p
-            )
+            # Choose constitutive model: 0=Von Mises, 1=Drucker-Prager
+            if constitutive_model == 0:
+                particle_F[p] = von_mises_return_mapping_with_damage_YDW(
+                    particle_F_trial[p], 
+                    particlePosition,
+                    particleVelocity,
+                    initialPhaseChangePosition,
+                    initialPhaseChangeVelocity,
+                    materialLabel,
+                    particle_accumulated_strain,
+                    particle_damage,
+                    mu,
+                    lam,
+                    yield_stress,
+                    hardening,
+                    softening, 
+                    particle_density,
+                    strainCriteria,
+                    efficiency,
+                    p
+                )
+            else:  # Drucker-Prager
+                particle_F[p] = drucker_prager_return_mapping(
+                    particle_F_trial[p], 
+                    particlePosition,
+                    particleVelocity,
+                    initialPhaseChangePosition,
+                    initialPhaseChangeVelocity,
+                    materialLabel,
+                    particle_accumulated_strain,
+                    particle_damage,
+                    mu,
+                    lam,
+                    yield_stress,
+                    alpha,
+                    hardening,
+                    softening, 
+                    particle_density,
+                    strainCriteria,
+                    efficiency,
+                    p
+                )
 
             # compute stress here
             J = wp.determinant(particle_F[p])
@@ -128,7 +233,11 @@ def compute_stress_from_F_trial(
 
             stress = (stress + wp.transpose(stress)) / 2.0  # enfore symmetry
 
-
+            # NOTE: Gravitational stress is NOT added here because:
+            # 1. It would not be persistent (F tracks deformation from reference, not absolute stress)
+            # 2. Instead, we initialize geostatic stress at t=0 (via initialize_geostatic_stress)
+            # 3. And apply gravity as body force in grid update to maintain equilibrium
+            
             # === Kelvin-Voigt damping ===
             #TODO: eta should scale with damage, can add rayleigh high and low frequency damping
             # Get symmetric part of velocity gradient
@@ -182,7 +291,8 @@ def von_mises_return_mapping_with_damage_YDW(
 
     # Trial deviatoric stress (effective)
     tau = 2.0 * mu[p] * epsilon + lam[p] * (epsilon[0] + epsilon[1] + epsilon[2]) * wp.vec3(1.0)
-    tau_dev = tau - (tau[0] + tau[1] + tau[2]) / 3.0 * wp.vec3(1.0)
+    p_stress = (tau[0] + tau[1] + tau[2]) / 3.0
+    tau_dev = tau - p_stress * wp.vec3(1.0)
 
     # Modified yield stress due to damage
     D = damage[p]
@@ -225,6 +335,9 @@ def von_mises_return_mapping_with_damage_YDW(
             v_dir = wp.normalize(particleVelocity[p] + wp.vec3(1e-12))  # avoid divide by zero
             particleVelocity[p] = particleVelocity[p] + v_expected * v_dir
             initialPhaseChangeVelocity[p] = particleVelocity[p]
+            # initialPhaseChangeVelocity[p][0]=0.0
+            # initialPhaseChangeVelocity[p][1]=0.0
+            # initialPhaseChangeVelocity[p][2]=0.0
             
             return F_trial
         
@@ -232,8 +345,9 @@ def von_mises_return_mapping_with_damage_YDW(
         epsilon = epsilon - (delta_gamma / epsilon_dev_norm) * epsilon_dev
 
         # Update yield stress (softening or hardening)
-        yield_stress[p] += 2.0 * mu[p] * hardening[p] * delta_gamma
-        yield_stress[p] -= softening[p] * wp.length((delta_gamma / epsilon_dev_norm) * epsilon_dev)
+        # dimensionless knobs: hardening[p] = \bar H, softening[p] = \bar S
+        dsy = 2.0 * mu[p] * (hardening[p] - softening[p]) * delta_gamma
+        yield_stress[p] = wp.max(0.0, yield_stress[p] + dsy)
 
         # fail the material
         if yield_stress[p] < 0.0:
@@ -252,6 +366,268 @@ def von_mises_return_mapping_with_damage_YDW(
 
     else:
         return F_trial
+
+
+@wp.func
+def drucker_prager_return_mapping(
+    F_trial: wp.mat33, 
+    particlePosition: wp.array(dtype=wp.vec3),
+    particleVelocity: wp.array(dtype=wp.vec3),
+    initialPhaseChangePosition: wp.array(dtype=wp.vec3),
+    initialPhaseChangeVelocity: wp.array(dtype=wp.vec3),
+    materialLabel: wp.array(dtype=wp.int32),
+    particle_accumulated_strain: wp.array(dtype=float),
+    damage: wp.array(dtype=float),
+    mu:  wp.array(dtype=float),
+    lam:  wp.array(dtype=float),
+    yield_stress: wp.array(dtype=float),
+    alpha: wp.array(dtype=float),
+    hardening:  wp.array(dtype=float),
+    softening: wp.array(dtype=float),
+    density: wp.array(dtype=float),
+    strainCriteria: wp.array(dtype=float),
+    efficiency: float,
+    p: int
+):
+    
+    U = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    V = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    sig_old = wp.vec3(0.0) 
+    wp.svd3(F_trial, U, sig_old, V) 
+
+    sig = wp.vec3(wp.max(sig_old[0], 0.01), wp.max(sig_old[1], 0.01), wp.max(sig_old[2], 0.01))  # add this to prevent NaN in extrem cases
+    epsilon = wp.vec3(wp.log(sig[0]), wp.log(sig[1]), wp.log(sig[2]))
+    mean_eps = (epsilon[0] + epsilon[1] + epsilon[2]) / 3.0
+    epsilon_dev = epsilon - wp.vec3(mean_eps)
+
+    # Trial deviatoric stress (effective)
+    tau = 2.0 * mu[p] * epsilon + lam[p] * (epsilon[0] + epsilon[1] + epsilon[2]) * wp.vec3(1.0)
+    p_stress = (tau[0] + tau[1] + tau[2]) / 3.0
+    tau_dev = tau - p_stress * wp.vec3(1.0)
+
+    # Modified yield stress due to damage
+    D = damage[p]
+    sigma_eq = wp.length(tau_dev)
+    # Add pressure effect to yield stress (Drucker-Prager-like)
+    # α controls pressure sensitivity (friction angle effect)
+    # Sign convention: compression = negative, so use MINUS to increase strength
+    # - Compression (p < 0): -α·p > 0 → increases yield stress
+    # - Tension (p > 0):     -α·p < 0 → decreases yield stress
+    # If α = 0, behaves like standard Von Mises
+    yield_eff = (1.0 - D) * (yield_stress[p] - alpha[p] * p_stress)
+
+    if sigma_eq > yield_eff:
+        epsilon_dev_norm = wp.length(epsilon_dev) + 1e-6
+
+        delta_gamma = epsilon_dev_norm - yield_eff / (2.0 * mu[p])
+        # Accumulate plastic strain
+        plastic_strain_increment = wp.sqrt(2.0 / 3.0) * delta_gamma
+        particle_accumulated_strain[p] += plastic_strain_increment
+
+        # === Damage evolution ===
+        if strainCriteria[p] > 0.0:
+            dD = plastic_strain_increment / strainCriteria[p]
+            damage[p] = wp.min(1.0, damage[p] + dD)
+            D = damage[p]  # Update effective value
+            
+        # === Phase transition ===
+        if damage[p] >= 1.0:
+            materialLabel[p] = 2
+            initialPhaseChangePosition[p] = particlePosition[p]
+            # estimate the velocity from energy release
+            # Convert deviatoric stress magnitude to velocity via elastic energy estimate #TODO: this can be computed from components directly rather than estimated
+            rho = density[p]
+
+            # sigma_vm = wp.length(cond)  # von Mises-like
+            # E = youngs_modulus[p]
+            # v_expected = wp.sqrt(efficiency * sigma_vm * sigma_vm / (rho * E))
+
+            # Compute elastic strain energy density: u = 0.5 * sigma : epsilon
+            u = 0.5 * (tau[0]*epsilon[0] + tau[1]*epsilon[1] + tau[2]*epsilon[2])
+
+            # Energy-to-velocity conversion
+            v_expected = wp.sqrt(2.0 * efficiency * u / rho)
+            
+            # Add in the direction of current motion
+            v_dir = wp.normalize(particleVelocity[p] + wp.vec3(1e-12))  # avoid divide by zero
+            particleVelocity[p] = particleVelocity[p] + v_expected * v_dir
+            initialPhaseChangeVelocity[p] = particleVelocity[p]
+            # initialPhaseChangeVelocity[p][0]=0.0
+            # initialPhaseChangeVelocity[p][1]=0.0
+            # initialPhaseChangeVelocity[p][2]=0.0
+            
+            return F_trial
+        
+        # Plastic correction
+        epsilon = epsilon - (delta_gamma / epsilon_dev_norm) * epsilon_dev
+
+        # Update yield stress (softening or hardening)
+        # dimensionless knobs: hardening[p] = \bar H, softening[p] = \bar S
+        dsy = 2.0 * mu[p] * (hardening[p] - softening[p]) * delta_gamma
+        yield_stress[p] = wp.max(0.0, yield_stress[p] + dsy)
+
+        # fail the material
+        if yield_stress[p] < 0.0:
+            yield_stress[p] = 0.0
+            mu[p] = 0.0
+            lam[p] = 0.0
+
+        # Reconstruct elastic part
+        sig_elastic = wp.mat33(
+            wp.exp(epsilon[0]), 0.0, 0.0,
+            0.0, wp.exp(epsilon[1]), 0.0,
+            0.0, 0.0, wp.exp(epsilon[2])
+        )
+        F_elastic = U * sig_elastic * wp.transpose(V)
+        return F_elastic
+
+    else:
+        return F_trial
+
+
+
+
+@wp.func
+def drucker_prager_return_mapping_old(
+    F_trial: wp.mat33,
+    particlePosition: wp.array(dtype=wp.vec3),
+    particleVelocity: wp.array(dtype=wp.vec3),
+    initialPhaseChangePosition: wp.array(dtype=wp.vec3),
+    initialPhaseChangeVelocity: wp.array(dtype=wp.vec3),
+    materialLabel: wp.array(dtype=wp.int32),
+    particle_accumulated_strain: wp.array(dtype=float),
+    damage: wp.array(dtype=float),
+    mu: wp.array(dtype=float),
+    lam: wp.array(dtype=float),
+    cohesion: wp.array(dtype=float),
+    friction_angle: wp.array(dtype=float),
+    dilation_angle: wp.array(dtype=float),
+    tension_cutoff: wp.array(dtype=float),
+    hardening: wp.array(dtype=float),
+    softening: wp.array(dtype=float),
+    density: wp.array(dtype=float),
+    strainCriteria: wp.array(dtype=float),
+    efficiency: float,
+    p: int
+):
+    """
+    Simplified Drucker-Prager for rock caving:
+    - Pressure-dependent yielding (cohesion + friction)
+    - Non-associated flow (dilatancy)
+    - Tension cutoff
+    - Cohesion degradation with damage
+    """
+    # SVD decomposition
+    U = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    V = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    sig_old = wp.vec3(0.0)
+    wp.svd3(F_trial, U, sig_old, V)
+    
+    sig = wp.vec3(wp.max(sig_old[0], 0.01), wp.max(sig_old[1], 0.01), wp.max(sig_old[2], 0.01))
+    epsilon = wp.vec3(wp.log(sig[0]), wp.log(sig[1]), wp.log(sig[2]))
+    
+    # Trial stress
+    tau = 2.0 * mu[p] * epsilon + lam[p] * (epsilon[0] + epsilon[1] + epsilon[2]) * wp.vec3(1.0)
+    
+    # Stress invariants (positive = compression)
+    p_stress = (tau[0] + tau[1] + tau[2]) / 3.0
+    tau_dev = tau - p_stress * wp.vec3(1.0)
+    q = wp.sqrt(1.5) * wp.length(tau_dev)
+    
+    # Damage-dependent cohesion (degrades exponentially)
+    D = damage[p]
+    c_eff = cohesion[p] * (1.0 - D)  # Simple linear degradation
+    
+    # Drucker-Prager parameters
+    phi = friction_angle[p]  # Already in radians
+    psi = dilation_angle[p]  # Already in radians
+    
+    sin_phi = wp.sin(phi)
+    cos_phi = wp.cos(phi)
+    sin_psi = wp.sin(psi)
+    
+    # Plane strain approximation
+    alpha = (2.0 * sin_phi) / (wp.sqrt(3.0) * (3.0 - sin_phi))
+    k = (6.0 * c_eff * cos_phi) / (wp.sqrt(3.0) * (3.0 - sin_phi))
+    beta = (2.0 * sin_psi) / (wp.sqrt(3.0) * (3.0 - sin_psi))
+    
+    # Tension cutoff
+    sigma_t = tension_cutoff[p]
+    if p_stress < -sigma_t:
+        # Tensile failure
+        damage[p] = 1.0
+        materialLabel[p] = 2
+        initialPhaseChangePosition[p] = particlePosition[p]
+        
+        rho = density[p]
+        u = 0.5 * (tau[0] * epsilon[0] + tau[1] * epsilon[1] + tau[2] * epsilon[2])
+        u = wp.max(u, 0.0)
+        v_expected = wp.sqrt(2.0 * efficiency * u / rho)
+        
+        v_dir = wp.normalize(particleVelocity[p] + wp.vec3(1e-12))
+        particleVelocity[p] = particleVelocity[p] + v_expected * v_dir
+        initialPhaseChangeVelocity[p] = particleVelocity[p]
+        
+        return F_trial
+    
+    # Yield function: F = q + alpha*p - k
+    F_yield = q + alpha * p_stress - k
+    
+    if F_yield > 0.0:
+        # Return mapping
+        bulk_modulus = lam[p] + 2.0 * mu[p] / 3.0
+        denom = 3.0 * mu[p] + 9.0 * bulk_modulus * alpha * beta
+        
+        delta_gamma = F_yield / denom if denom > 1e-12 else 0.0
+        
+        # Plastic strain
+        plastic_increment = delta_gamma * wp.sqrt(1.0 + beta * beta / 3.0)
+        particle_accumulated_strain[p] += plastic_increment
+        
+        # Damage evolution
+        if strainCriteria[p] > 0.0:
+            dD = plastic_increment / strainCriteria[p]
+            damage[p] = wp.min(1.0, damage[p] + dD)
+        
+        # Phase transition check
+        if damage[p] >= 1.0:
+            materialLabel[p] = 2
+            initialPhaseChangePosition[p] = particlePosition[p]
+            
+            rho = density[p]
+            u = 0.5 * (tau[0] * epsilon[0] + tau[1] * epsilon[1] + tau[2] * epsilon[2])
+            u = wp.max(u, 0.0)
+            v_expected = wp.sqrt(2.0 * efficiency * u / rho)
+            
+            v_dir = wp.normalize(particleVelocity[p] + wp.vec3(1e-12))
+            particleVelocity[p] = particleVelocity[p] + v_expected * v_dir
+            initialPhaseChangeVelocity[p] = particleVelocity[p]
+            
+            return F_trial
+        
+        # Update stresses
+        p_stress_new = p_stress - 3.0 * bulk_modulus * beta * delta_gamma
+        q_new = wp.max(q - 3.0 * mu[p] * delta_gamma, 0.0)
+        
+        # Reconstruct stress
+        if q > 1e-12:
+            tau_new = (q_new / q) * tau_dev + p_stress_new * wp.vec3(1.0)
+        else:
+            tau_new = p_stress_new * wp.vec3(1.0)
+        
+        # Back to strain
+        trace_tau = tau_new[0] + tau_new[1] + tau_new[2]
+        epsilon_new = (tau_new - lam[p] * trace_tau * wp.vec3(1.0/3.0)) / (2.0 * mu[p])
+        
+        # Reconstruct F
+        sig_elastic = wp.mat33(
+            wp.exp(epsilon_new[0]), 0.0, 0.0,
+            0.0, wp.exp(epsilon_new[1]), 0.0,
+            0.0, 0.0, wp.exp(epsilon_new[2])
+        )
+        return U * sig_elastic * wp.transpose(V)
+    
+    return F_trial
 
 
 @wp.func
@@ -369,6 +745,12 @@ def set_mat33_to_identity(target_array: wp.array(dtype=wp.mat33)):
 
 
 @wp.kernel
+def set_mat33_to_copy(source_array: wp.array(dtype=wp.mat33), target_array: wp.array(dtype=wp.mat33)):
+    tid = wp.tid()
+    target_array[tid] = source_array[tid]
+
+
+@wp.kernel
 def add_identity_to_mat33(target_array: wp.array(dtype=wp.mat33)):
     tid = wp.tid()
     target_array[tid] = wp.add(
@@ -452,7 +834,7 @@ def g2p(dt: float,
         minBounds: wp.vec3,
         ):
     p = wp.tid()
-    if activeLabel[p] == 1: # both mpm and xpbd particles contribute to the grid
+    if activeLabel[p] == 1:
         if materialLabel[p] == 1:  # only mpm particles need grid information
             grid_pos = (particle_x[p]-minBounds) * inv_dx
             base_pos_x = wp.int(grid_pos[0] - 0.5)

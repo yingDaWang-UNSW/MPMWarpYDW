@@ -73,7 +73,9 @@ def mpmSimulationStep(
     boundFriction,
     update_cov,
     nPoints,
-    device
+    device,
+    constitutive_model,
+    alpha,
 ):
     """
     Perform one MPM simulation step (stress update, P2G, grid ops, G2P).
@@ -109,6 +111,8 @@ def mpmSimulationStep(
             particle_stress,
             particle_accumulated_strain,
             particle_damage,
+            constitutive_model,
+            alpha
         ],
         device=device
     )

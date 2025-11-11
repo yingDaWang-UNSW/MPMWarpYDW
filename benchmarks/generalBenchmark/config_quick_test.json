@@ -1,0 +1,52 @@
+{
+  "dt": 0.0001,
+  "dtxpbd": 0.01,
+  "nSteps": 5000,
+  "bigSteps": 500,
+  "residualThreshold": 0.5,
+  
+  "rpic_damping": 0.2,
+  "grid_v_damping_scale": 1.1,
+  "update_cov": 1,
+  
+  "render": 0,
+  "saveFlag": 0,
+  
+  "domainFile": "./benchmarks/generalBenchmark/annular_arch_particles.h5",
+  "grid_padding": 25.0,
+  "grid_particle_spacing_scale": 4.0,
+  
+  "density": 3000.0,
+  "E": 1e8,
+  "nu": 0.2,
+
+  "constitutive_model": 1,
+  
+  "ys": 1e7,
+  "alpha": 0.5,
+  "hardening": 0.3,
+  "softening": 0.0,
+  "eta_shear": 1e7,
+  "eta_bulk": 1e7,
+  
+  "gravity": -9.81,
+  "K0": 0.5,
+  
+  "boundFriction": 0.2,
+  "eff": 0.05,
+  "strainCriteria": 0.2,
+  
+  "xpbd_relaxation": 1.0,
+  "dynamicParticleFriction": 0.05,
+  "staticVelocityThreshold": 1e-5,
+  "staticParticleFriction": 0.1,
+  "xpbd_iterations": 4,
+  "particle_cohesion": 0.0,
+  "sleepThreshold": 0.5,
+  
+  "swellingRatio": 0.2,
+  "swellingActivationFactor": 1.0,
+  "swellingMaxFactor": 2.0,
+  
+  "particle_v_max": 1000.0
+}

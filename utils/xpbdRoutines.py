@@ -114,7 +114,7 @@ def my_solve_particle_bound_contacts(
                 delta_f = wp.normalize(vt) * lambda_f
 
             wp.atomic_add(delta, tid, (delta_f - delta_n) / wi * relaxation * wi)
-
+#TODO: particles that interact with mpm points need to compensate for the fact the mpm point is static, and also the impulse needs to be saved to project back into the mpm grid
 @wp.kernel
 def my_solve_particle_particle_contacts(
     activeLabel: wp.array(dtype=wp.int32),

@@ -23,6 +23,8 @@ def get_args():
     parser.add_argument("--dt", type=float, default=1e-3, help="Time step for MPM (s)")
     parser.add_argument("--dtxpbd", type=float, default=1e-2, help="Time step for XPBD (s)")
     parser.add_argument("--nSteps", type=int, default=2500000, help="Number of simulation steps")
+    parser.add_argument("--bigSteps", type=int, default=100, help="Number of big steps (outer loop iterations)")
+    parser.add_argument("--residualThreshold", type=float, default=5e-1, help="Residual threshold for convergence")
 
     # Damping & integration
     parser.add_argument("--rpic_damping", type=float, default=0.2, help="Damping for P2G transfer")
@@ -31,6 +33,7 @@ def get_args():
 
     # Rendering & saving
     parser.add_argument("--render", type=int, default=0, help="Enable rendering")
+    parser.add_argument("--color_mode", type=str, default="effective_ys", help="Color mode for rendering")
     parser.add_argument("--saveFlag", type=int, default=0, help="Enable saving simulation results")
 
     # Domain & grid
@@ -42,7 +45,17 @@ def get_args():
     parser.add_argument("--density", type=float, default=3000.0, help="Density of material (kg/m³)")
     parser.add_argument("--E", type=float, default=1e8, help="Young's modulus (Pa)")
     parser.add_argument("--nu", type=float, default=0.2, help="Poisson's ratio")
-    parser.add_argument("--ys", type=float, default=3e6, help="Yield stress (Pa)")
+    
+    # Constitutive model selection
+    parser.add_argument("--constitutive_model", type=int, default=0, help="0=Von Mises, 1=Drucker-Prager")
+    
+    # Von Mises parameters
+    parser.add_argument("--ys", type=float, default=3e8, help="Yield stress (Pa) - for Von Mises")
+
+    # Drucker-Prager parameters
+    parser.add_argument("--alpha", type=float, default=0.5, help="Pressure sensitivity (α) - for Drucker-Prager")
+
+    # Hardening/softening (both models)
     parser.add_argument("--hardening", type=float, default=0, help="Hardening parameter")
     parser.add_argument("--softening", type=float, default=0, help="Softening modulus")
     parser.add_argument("--eta_shear", type=float, default=1e7, help="Shear viscosity")
@@ -51,6 +64,7 @@ def get_args():
     # Gravity
     parser.add_argument("--gravity", type=float, default=-9.81, help="Gravity (m/s²)")
     parser.add_argument("--K0", type=float, default=0.5, help="Lateral earth pressure coefficient for initial stress")
+    parser.add_argument("--z_top", type=float, default=None, help="Reference height for geostatic stress (m). If None, uses max particle z-coordinate")
 
     # Boundary & friction
     parser.add_argument("--boundFriction", type=float, default=0.2, help="Bounding box friction")
