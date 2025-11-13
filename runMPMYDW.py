@@ -165,16 +165,16 @@ particle_F_trial = wp.zeros(shape=nPoints, dtype=wp.mat33)
 # to represent the prestressed state. This way, elastic stress from F will
 # automatically include geostatic compression.
 g_mag = np.abs(args.gravity)  # Magnitude of gravity
-wp.launch(kernel=mpmRoutines.set_mat33_to_identity,
-          dim=nPoints,
-          inputs=[particle_F],
-          device=device)
-# wp.launch(
-#     kernel=mpmRoutines.initialize_geostatic_F,
-#     dim=nPoints,
-#     inputs=[particle_x, particle_F, mu, lam, particle_density, g_mag, z_top, K0],
-#     device=device
-# )
+# wp.launch(kernel=mpmRoutines.set_mat33_to_identity,
+#           dim=nPoints,
+#           inputs=[particle_F],
+#           device=device)
+wp.launch(
+    kernel=mpmRoutines.initialize_geostatic_F,
+    dim=nPoints,
+    inputs=[particle_x, particle_F, mu, lam, particle_density, g_mag, z_top, K0],
+    device=device
+)
 
 # Check if geostatic stress exceeds yield stress
 # Compute representative stress at mid-depth

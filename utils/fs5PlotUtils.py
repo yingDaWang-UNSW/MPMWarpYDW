@@ -402,15 +402,17 @@ def render_mpm(
         )
 
     elif color_mode == "stress":
+        # 0 stress should always be the middle color
         sigma = particle_stress.numpy().astype(np.float64)  # (N,3,3)
         mean_stress = np.trace(sigma, axis1=1, axis2=2) / 3.0
-        # Use absolute value so compression (negative) maps correctly
-        # Larger compression magnitude → hotter color
-        mean_stress_abs = np.abs(mean_stress)
+        # Scale symmetrically around 0 based on larger magnitude
+        stress_min = np.quantile(mean_stress, 0.01)
+        stress_max = np.quantile(mean_stress, 0.99)
+        max_magnitude = max(abs(stress_min), abs(stress_max))
         colors = values_to_rgb(
-            mean_stress_abs,
-            min_val=0.0,  # No stress
-            max_val=np.quantile(mean_stress_abs, 0.99)  # Maximum compression
+            mean_stress,
+            min_val=-max_magnitude,  # Tension
+            max_val=max_magnitude    # Compression
         )
     
     elif color_mode == "sigma_zz":

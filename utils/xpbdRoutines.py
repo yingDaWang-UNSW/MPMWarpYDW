@@ -151,7 +151,11 @@ def my_solve_particle_particle_contacts(
             delta = wp.vec3(0.0)
             alpha = 0.0 # XPBD compliance factor
             while wp.hash_grid_query_next(query, index):
-                if activeLabel[index]==1 and index != i and particle_mass[index] > 0.0: 
+                if activeLabel[index]==1 and index != i and particle_mass[index] > 0.0:
+                    # Skip MPM-MPM collisions (materialLabel==1 for both)
+                    if materialLabel[i] == 1 and materialLabel[index] == 1:
+                        continue
+                    
                     n = x - particle_x[index]
                     d = wp.length(n)
                     err = d - radius - particle_radius[index]
