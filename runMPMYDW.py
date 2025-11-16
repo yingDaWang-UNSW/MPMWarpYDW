@@ -77,14 +77,14 @@ ys = np.full(nPoints, args.ys, dtype=np.float32)
 # make ys lower at the top of the domain quadratically
 # ys = ys * (1 - (x[:, 2] - minBounds[2]) / (maxBounds[2] - minBounds[2]))**3
 # make ys at the bottom infinite
-ys[x[:, 2] < minBounds[2] + 0.1 * (maxBounds[2] - minBounds[2])] = 1e10
+# ys[x[:, 2] < minBounds[2] + 0.1 * (maxBounds[2] - minBounds[2])] = 1e10
 
 # make ys higher at the outer edge of the domain
-radius = np.sqrt((x[:, 0]-np.mean(x[:, 0]))**2 + (x[:, 1]-np.mean(x[:, 1]))**2)
-ys += radius**5 * 1e3  # increase yield stress by 100000 Pa per meter of radius
+# radius = np.sqrt((x[:, 0]-np.mean(x[:, 0]))**2 + (x[:, 1]-np.mean(x[:, 1]))**2)
+# ys += radius**5 * 1e3  # increase yield stress by 100000 Pa per meter of radius
 # make the bottom 20% material 2
 # but only the central 40% in the long direction
-ys[((x[:, 1] > np.percentile(x[:, 1], 30)) & (x[:, 1] < np.percentile(x[:, 1], 70))) & (x[:, 2] < np.percentile(x[:, 2], 20))] = 0
+# ys[((x[:, 1] > np.percentile(x[:, 1], 30)) & (x[:, 1] < np.percentile(x[:, 1], 70))) & (x[:, 2] < np.percentile(x[:, 2], 20))] = 0
 
 
 
@@ -176,35 +176,35 @@ wp.launch(
     device=device
 )
 
-# Check if geostatic stress exceeds yield stress
-# Compute representative stress at mid-depth
-mid_depth = (z_top - np.min(x[:, 2])) / 2.0
-sigma_v_mid = args.density * g_mag * mid_depth
-sigma_h_mid = K0 * sigma_v_mid
+# # Check if geostatic stress exceeds yield stress
+# # Compute representative stress at mid-depth
+# mid_depth = (z_top - np.min(x[:, 2])) / 2.0
+# sigma_v_mid = args.density * g_mag * mid_depth
+# sigma_h_mid = K0 * sigma_v_mid
 
-# Compute vertical pressure gradient
-domain_height = z_top - np.min(x[:, 2])
-sigma_v_bottom = args.density * g_mag * domain_height
-sigma_v_top = 0.0  # No overburden at surface
-vertical_gradient = (sigma_v_bottom - sigma_v_top) / domain_height if domain_height > 0 else 0.0
+# # Compute vertical pressure gradient
+# domain_height = z_top - np.min(x[:, 2])
+# sigma_v_bottom = args.density * g_mag * domain_height
+# sigma_v_top = 0.0  # No overburden at surface
+# vertical_gradient = (sigma_v_bottom - sigma_v_top) / domain_height if domain_height > 0 else 0.0
 
-# Von Mises equivalent for geostatic state: sqrt(3/2 * |s|^2) where s is deviatoric
-# For σ_h = σ_h, σ_v: mean = (2σ_h + σ_v)/3, deviatoric: s_h = σ_h - mean, s_v = σ_v - mean
-mean_stress = (2*sigma_h_mid + sigma_v_mid) / 3.0
-s_h = sigma_h_mid - mean_stress
-s_v = sigma_v_mid - mean_stress
-von_mises_geostatic = np.sqrt(1.5 * (2*s_h**2 + s_v**2))
+# # Von Mises equivalent for geostatic state: sqrt(3/2 * |s|^2) where s is deviatoric
+# # For σ_h = σ_h, σ_v: mean = (2σ_h + σ_v)/3, deviatoric: s_h = σ_h - mean, s_v = σ_v - mean
+# mean_stress = (2*sigma_h_mid + sigma_v_mid) / 3.0
+# s_h = sigma_h_mid - mean_stress
+# s_v = sigma_v_mid - mean_stress
+# von_mises_geostatic = np.sqrt(1.5 * (2*s_h**2 + s_v**2))
 
-print(f"Initialized geostatic deformation gradient (z_top={z_top:.2f}, K0={K0:.2f})")
-print(f"  Domain height: {domain_height:.2f} m")
-print(f"  Vertical pressure gradient: dσ_v/dz = {vertical_gradient:.2e} Pa/m (= ρg = {args.density * g_mag:.2e} Pa/m)")
-print(f"  Stress at bottom: σ_v={sigma_v_bottom:.2e} Pa, σ_h={K0*sigma_v_bottom:.2e} Pa")
-print(f"  Mid-depth stress: σ_v={sigma_v_mid:.2e} Pa, σ_h={sigma_h_mid:.2e} Pa")
-print(f"  Von Mises equivalent (mid-depth): {von_mises_geostatic:.2e} Pa")
-print(f"  Yield stress: {args.ys:.2e} Pa")
-if von_mises_geostatic > args.ys:
-    print(f"     WARNING: Geostatic stress ({von_mises_geostatic:.2e}) > Yield stress ({args.ys:.2e})")
-    print(f"     Material will plastically yield! Increase yield stress or reduce K0.")
+# print(f"Initialized geostatic deformation gradient (z_top={z_top:.2f}, K0={K0:.2f})")
+# print(f"  Domain height: {domain_height:.2f} m")
+# print(f"  Vertical pressure gradient: dσ_v/dz = {vertical_gradient:.2e} Pa/m (= ρg = {args.density * g_mag:.2e} Pa/m)")
+# print(f"  Stress at bottom: σ_v={sigma_v_bottom:.2e} Pa, σ_h={K0*sigma_v_bottom:.2e} Pa")
+# print(f"  Mid-depth stress: σ_v={sigma_v_mid:.2e} Pa, σ_h={sigma_h_mid:.2e} Pa")
+# print(f"  Von Mises equivalent (mid-depth): {von_mises_geostatic:.2e} Pa")
+# print(f"  Yield stress: {args.ys:.2e} Pa")
+# if von_mises_geostatic > args.ys:
+#     print(f"     WARNING: Geostatic stress ({von_mises_geostatic:.2e}) > Yield stress ({args.ys:.2e})")
+#     print(f"     Material will plastically yield! Increase yield stress or reduce K0.")
 
 # Copy F to F_trial for first step
 wp.launch(kernel=mpmRoutines.set_mat33_to_copy,
@@ -452,22 +452,22 @@ for bigStep in range(0, bigSteps):
         residualCPU = residual.numpy()[0]/numActiveParticles.numpy()[0]
         t=t+dt
         counter=counter+1
-        if np.mod(counter,1000)==0:
-            # DIAGNOSTIC: Check velocities and positions
-            particle_v_cpu = particle_v.numpy()
-            particle_x_cpu = particle_x.numpy()
-            mpm_mask = materialLabel.numpy() == 1
-            xpbd_mask = materialLabel.numpy() == 2
+        if np.mod(counter,100)==0:
+            # # DIAGNOSTIC: Check velocities and positions
+            # particle_v_cpu = particle_v.numpy()
+            # particle_x_cpu = particle_x.numpy()
+            # mpm_mask = materialLabel.numpy() == 1
+            # xpbd_mask = materialLabel.numpy() == 2
             
-            if np.any(mpm_mask):
-                mpm_vz = particle_v_cpu[mpm_mask, 2]
-                mpm_z = particle_x_cpu[mpm_mask, 2]
-                print(f'MPM:  mean vz={np.mean(mpm_vz):.3f} m/s, mean z={np.mean(mpm_z):.2f} m')
+            # if np.any(mpm_mask):
+            #     mpm_vz = particle_v_cpu[mpm_mask, 2]
+            #     mpm_z = particle_x_cpu[mpm_mask, 2]
+            #     print(f'MPM:  mean vz={np.mean(mpm_vz):.3f} m/s, mean z={np.mean(mpm_z):.2f} m')
             
-            if np.any(xpbd_mask):
-                xpbd_vz = particle_v_cpu[xpbd_mask, 2]
-                xpbd_z = particle_x_cpu[xpbd_mask, 2]
-                print(f'XPBD: mean vz={np.mean(xpbd_vz):.3f} m/s, mean z={np.mean(xpbd_z):.2f} m')
+            # if np.any(xpbd_mask):
+            #     xpbd_vz = particle_v_cpu[xpbd_mask, 2]
+            #     xpbd_z = particle_x_cpu[xpbd_mask, 2]
+            #     print(f'XPBD: mean vz={np.mean(xpbd_vz):.3f} m/s, mean z={np.mean(xpbd_z):.2f} m')
             
             print(f'Step: {counter}, simulationTime: {t:.4f}s, deltaTime: +{time.time()-stepStartTime:.4f}s, realTime: {time.time()-startTime:.4f}s, residual: {residualCPU:.4e}, mean accumulated plastic strain: {np.mean(particle_accumulated_strain.numpy()):.4f}, active particles: {numActiveParticles.numpy()[0]}')
             

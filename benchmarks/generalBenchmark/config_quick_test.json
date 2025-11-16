@@ -12,7 +12,7 @@
   "render": 1,
   "saveFlag": 0,
   "outputFolder": "./benchmarks/generalBenchmark/output/",
-  "domainFile": "./benchmarks/generalBenchmark/block_particles.h5",
+  "domainFile": "./benchmarks/generalBenchmark/annular_arch_particles.h5",
   "grid_padding": 10.0,
   "grid_particle_spacing_scale": 2.0,
   
@@ -44,10 +44,10 @@
   "particle_cohesion": 0.0,
   "sleepThreshold": 0.5,
   
-  "swellingRatio": 0,
+  "swellingRatio": 0.2,
   "swellingActivationFactor": 1.0,
   "swellingMaxFactor": 2.0,
   
-  "particle_v_max": 1000.0,
+  "particle_v_max": 100.0,
   "color_mode": "damage"
   }
