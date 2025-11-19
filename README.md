@@ -73,11 +73,33 @@ python runMPMYDW.py --config ./benchmarks/generalBenchmark/config_quick_test.jso
 1. **Prepare particle domain**: Create HDF5 file with particle positions and volumes
    ```python
    # See exampleDomains/createInputHDF5.py for example
+   # For spatially-varying properties, see benchmarks/spatialBenchmark/
    ```
 
 2. **Configure simulation**: Create a JSON config file (see `benchmarks/generalBenchmark/config_quick_test.json`)
 
 3. **Run**: `python runMPMYDW.py --config your_config.json`
+
+### Spatially-Varying Material Properties (NEW!)
+
+The simulator now supports **heterogeneous materials** with spatially-varying properties stored in HDF5 files:
+
+```bash
+# See the spatial benchmark for a complete example
+cd benchmarks/spatialBenchmark
+python createInputHDF5.py  # Generate HDF5 with spatial properties
+cd ../..
+python runMPMYDW.py --config ./benchmarks/spatialBenchmark/config_spatial.json
+```
+
+Supported spatial properties:
+- `density`, `E`, `nu` - Elastic properties
+- `ys`, `alpha` - Yield properties (Von Mises / Drucker-Prager)
+- `hardening`, `softening` - Plasticity parameters
+- `eta_shear`, `eta_bulk` - Viscosity
+- `strainCriteria` - Damage threshold
+
+See `benchmarks/spatialBenchmark/QUICKSTART.md` for details.
 
 ## Mathematical Model
 
@@ -232,10 +254,18 @@ MPMWarpYDW/
 │   └── annular_arch_particles.vtp  # VTK visualization
 │
 ├── benchmarks/                  # Test cases
-│   └── generalBenchmark/
-│       ├── config_quick_test.json  # Quick validation test
-│       ├── README.md               # Benchmark documentation
-│       └── run_benchmark.bat       # Windows batch script
+│   ├── generalBenchmark/
+│   │   ├── config_quick_test.json  # Quick validation test
+│   │   ├── README.md               # Benchmark documentation
+│   │   └── run_benchmark.bat       # Windows batch script
+│   ├── spatialBenchmark/           # NEW: Spatial properties demo
+│   │   ├── createInputHDF5.py      # Generate domain with spatial properties
+│   │   ├── config_spatial.json     # Configuration for spatial benchmark
+│   │   ├── QUICKSTART.md           # Quick start guide
+│   │   ├── README.md               # Detailed documentation
+│   │   └── run_benchmark.bat       # Windows batch script
+│   └── cavingBenchmark/
+│       └── ...
 │
 └── output/                      # Simulation results (VTK files)
     ├── sim_step_XXXXXX_particles.vtp

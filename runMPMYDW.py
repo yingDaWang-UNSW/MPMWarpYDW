@@ -43,13 +43,27 @@ saveFlag = args.saveFlag
 # --- Domain & grid ---
 domainFile = args.domainFile
 h5file = h5py.File(domainFile, "r")
-x, particle_volume = h5file["x"], h5file["particle_volume"]
-x = np.array(x).T
-# x = x + np.random.rand(x.shape[0], x.shape[1])*0.01 # jitter to prevent stress chains
+x = np.array(h5file["x"]).T
+particle_volume = np.array(h5file["particle_volume"])
+# x = x + np.random.rand(x.shape[0], x.shape[1])*0.1 # jitter to prevent stress chains
 # delete the middle 20% of particles in z
 # x = x[~((x[:, 2] > np.percentile(x[:, 2], 40)) & (x[:, 2] < np.percentile(x[:, 2], 60)))]
 nPoints = x.shape[0]
 print(f"Number of particles: {nPoints}")
+
+# Check if HDF5 contains spatial property arrays
+spatial_properties_available = {}
+spatial_property_names = ['density', 'E', 'nu', 'ys', 'alpha', 'hardening', 'softening', 
+                          'eta_shear', 'eta_bulk', 'strainCriteria']
+for prop_name in spatial_property_names:
+    if prop_name in h5file:
+        spatial_properties_available[prop_name] = True
+        print(f"  Found spatial array for: {prop_name}")
+    else:
+        spatial_properties_available[prop_name] = False
+
+if any(spatial_properties_available.values()):
+    print(f"Loading {sum(spatial_properties_available.values())} spatial property arrays from HDF5")
 
 minBounds = np.min(x, 0) - args.grid_padding
 maxBounds = np.max(x, 0) + args.grid_padding
@@ -69,29 +83,56 @@ centroids = np.vstack((X.ravel(), Y.ravel(), Z.ravel())).T
 print(f"Total grid centroids: {centroids.shape[0]}")
 
 # --- Material properties ---
-density = np.full(nPoints, args.density, dtype=np.float32)
-E = np.full(nPoints, args.E, dtype=np.float32)
-nu = np.full(nPoints, args.nu, dtype=np.float32)
+# Load from HDF5 if available, otherwise use args/defaults
+if spatial_properties_available.get('density', False):
+    density = np.array(h5file["density"], dtype=np.float32)
+    print(f"  Loaded density from HDF5: {density.min():.2e} to {density.max():.2e} kg/m³")
+else:
+    density = np.full(nPoints, args.density, dtype=np.float32)
 
-ys = np.full(nPoints, args.ys, dtype=np.float32)
-# make ys lower at the top of the domain quadratically
-# ys = ys * (1 - (x[:, 2] - minBounds[2]) / (maxBounds[2] - minBounds[2]))**3
-# make ys at the bottom infinite
-# ys[x[:, 2] < minBounds[2] + 0.1 * (maxBounds[2] - minBounds[2])] = 1e10
+if spatial_properties_available.get('E', False):
+    E = np.array(h5file["E"], dtype=np.float32)
+    print(f"  Loaded E from HDF5: {E.min():.2e} to {E.max():.2e} Pa")
+else:
+    E = np.full(nPoints, args.E, dtype=np.float32)
 
-# make ys higher at the outer edge of the domain
-# radius = np.sqrt((x[:, 0]-np.mean(x[:, 0]))**2 + (x[:, 1]-np.mean(x[:, 1]))**2)
-# ys += radius**5 * 1e3  # increase yield stress by 100000 Pa per meter of radius
-# make the bottom 20% material 2
-# but only the central 40% in the long direction
-# ys[((x[:, 1] > np.percentile(x[:, 1], 30)) & (x[:, 1] < np.percentile(x[:, 1], 70))) & (x[:, 2] < np.percentile(x[:, 2], 20))] = 0
+if spatial_properties_available.get('nu', False):
+    nu = np.array(h5file["nu"], dtype=np.float32)
+    print(f"  Loaded nu from HDF5: {nu.min():.3f} to {nu.max():.3f}")
+else:
+    nu = np.full(nPoints, args.nu, dtype=np.float32)
 
+if spatial_properties_available.get('ys', False):
+    ys = np.array(h5file["ys"], dtype=np.float32)
+    print(f"  Loaded ys from HDF5: {ys.min():.2e} to {ys.max():.2e} Pa")
+else:
+    ys = np.full(nPoints, args.ys, dtype=np.float32)
+    # Optional: Apply spatial modifications here if not using HDF5
+    # ys = ys * (1 - (x[:, 2] - minBounds[2]) / (maxBounds[2] - minBounds[2]))**3
 
+if spatial_properties_available.get('hardening', False):
+    hardening = np.array(h5file["hardening"], dtype=np.float32)
+    print(f"  Loaded hardening from HDF5: {hardening.min():.3f} to {hardening.max():.3f}")
+else:
+    hardening = np.full(nPoints, args.hardening, dtype=np.float32)
 
-hardening = np.full(nPoints, args.hardening, dtype=np.float32)
-softening = np.full(nPoints, args.softening, dtype=np.float32)
-eta_shear = np.full(nPoints, args.eta_shear, dtype=np.float32)
-eta_bulk = np.full(nPoints, args.eta_bulk, dtype=np.float32)
+if spatial_properties_available.get('softening', False):
+    softening = np.array(h5file["softening"], dtype=np.float32)
+    print(f"  Loaded softening from HDF5: {softening.min():.3f} to {softening.max():.3f}")
+else:
+    softening = np.full(nPoints, args.softening, dtype=np.float32)
+
+if spatial_properties_available.get('eta_shear', False):
+    eta_shear = np.array(h5file["eta_shear"], dtype=np.float32)
+    print(f"  Loaded eta_shear from HDF5: {eta_shear.min():.2e} to {eta_shear.max():.2e} Pa·s")
+else:
+    eta_shear = np.full(nPoints, args.eta_shear, dtype=np.float32)
+
+if spatial_properties_available.get('eta_bulk', False):
+    eta_bulk = np.array(h5file["eta_bulk"], dtype=np.float32)
+    print(f"  Loaded eta_bulk from HDF5: {eta_bulk.min():.2e} to {eta_bulk.max():.2e} Pa·s")
+else:
+    eta_bulk = np.full(nPoints, args.eta_bulk, dtype=np.float32)
 
 materialLabel = np.ones(nPoints, dtype=np.int32)
 
@@ -99,20 +140,36 @@ activeLabel = np.ones(nPoints, dtype=np.int32)
 
 # --- Constitutive model selection and parameters ---
 constitutive_model = args.constitutive_model
-alpha = args.alpha
+
+# Load alpha (Drucker-Prager) from HDF5 if available (before closing file)
+if spatial_properties_available.get('alpha', False):
+    alpha_array = np.array(h5file["alpha"], dtype=np.float32)
+    print(f"  Loaded alpha from HDF5: {alpha_array.min():.3f} to {alpha_array.max():.3f}")
+else:
+    alpha_array = np.full(nPoints, args.alpha, dtype=np.float32)
+
+# Load strainCriteria from HDF5 if available (before closing file)
+if spatial_properties_available.get('strainCriteria', False):
+    strainCriteria_array = np.array(h5file["strainCriteria"], dtype=np.float32)
+    print(f"  Loaded strainCriteria from HDF5: {strainCriteria_array.min():.3f} to {strainCriteria_array.max():.3f}")
+else:
+    strainCriteria_array = np.full(nPoints, args.strainCriteria, dtype=np.float32)
+
+# Close HDF5 file after loading all properties
+h5file.close()
+
 K0 = args.K0
 
 # --- Gravity, boundary, coupling ---
 gravity = wp.vec3(0.0, 0.0, args.gravity)
 boundFriction = args.boundFriction
 eff = args.eff
-strainCriteria = wp.full(nPoints, args.strainCriteria, dtype=wp.float32, device=device)
+strainCriteria = wp.array(strainCriteria_array, dtype=wp.float32, device=device)
 
 # --- XPBD Contact Threshold (prevents XPBD "pulling" on MPM when separating) ---
 # -1e20: disabled (original behavior)
 # 0.0: only compression (XPBD only contributes when approaching)
 # >0.0: allow small separation velocity threshold
-xpbd_contact_threshold = getattr(args, 'xpbd_contact_threshold', -1e20)
 
 # --- Transfer to GPU ---
 yMod = wp.array(E, dtype=wp.float32, device=device)
@@ -126,8 +183,8 @@ wp.launch(kernel=mpmRoutines.compute_mu_lam_bulk_from_E_nu,
           outputs=[mu, lam, bulk],
           device=device)
 
-# Create Drucker-Prager parameter arrays
-alpha = wp.full(nPoints, alpha, dtype=wp.float32, device=device)
+# Create Drucker-Prager parameter arrays (use alpha_array from HDF5 or defaults)
+alpha = wp.array(alpha_array, dtype=wp.float32, device=device)
 
 ys_base = ys.copy()  # keep a copy of the base yield stress for creep calculations`
 ys_base = wp.array(ys_base, dtype=wp.float32, device=device)
@@ -227,7 +284,6 @@ particle_damage = wp.array(damagetemp, dtype=float, device=device)
 particle_C = wp.zeros(shape=nPoints, dtype=wp.mat33)
 particle_init_cov = wp.zeros(shape=nPoints * 6, dtype=float, device=device)
 particle_cov = wp.zeros(shape=nPoints * 6, dtype=float, device=device)
-# radius for material 2 is 0.8* normal
 particle_radius = np.array(particle_vol.numpy()**(1/3)*np.pi/6)
 # particle_radius[materialLabel.numpy() == 2] = 0.5 * particle_radius[materialLabel.numpy() == 2]
 # particle_radius[materialLabel.numpy() == 1] = particle_radius[materialLabel.numpy() == 1]
@@ -382,7 +438,6 @@ for bigStep in range(0, bigSteps):
             device,
             constitutive_model,
             alpha,
-            xpbd_contact_threshold,  # Contact-aware coupling control
         )
         # perform the xpbd step if timestep has reached the threshold
         if np.mod(counter, mpmStepsPerXpbdStep) == 0 and counter>0:

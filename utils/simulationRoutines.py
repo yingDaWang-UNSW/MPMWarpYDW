@@ -76,7 +76,6 @@ def mpmSimulationStep(
     device,
     constitutive_model,
     alpha,
-    xpbd_contact_threshold=-1e20,  # New param: negative = disabled, 0 = compression only
 ):
     """
     Perform one MPM simulation step (stress update, P2G, grid ops, G2P).
@@ -138,7 +137,6 @@ def mpmSimulationStep(
             grid_m,
             grid_v_in,
             dt,
-            xpbd_contact_threshold  # Contact-aware coupling parameter
         ],
         device=device
     )

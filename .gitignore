@@ -9,3 +9,4 @@ output/*
 *.mp4
 .vscode*
 benchmarks/generalBenchmark/output*
+benchmarks/spatialBenchmark/output*

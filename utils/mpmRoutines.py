@@ -429,7 +429,8 @@ def drucker_prager_return_mapping(
             dD = plastic_strain_increment / strainCriteria[p]
             damage[p] = wp.min(1.0, damage[p] + dD)
             D = damage[p]  # Update effective value
-            
+        else:
+            damage[p] = 1.0
         # === Phase transition ===
         if damage[p] >= 1.0:
             materialLabel[p] = 2
@@ -679,8 +680,7 @@ def p2g_apic_with_stress(
     rpic_damping: float,
     grid_m: wp.array(dtype=float, ndim=3),
     grid_v_in: wp.array(dtype=wp.vec3, ndim=3),
-    dt: float,
-    xpbd_contact_threshold: float):  # Contact-aware coupling parameter (currently unused with mass-only approach)
+    dt: float):  # Contact-aware coupling parameter (currently unused with mass-only approach)
     # input given to p2g:   particle_stress
     #                       particle_x
     #                       particle_v

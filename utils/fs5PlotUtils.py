@@ -255,7 +255,12 @@ def save_grid_and_particles_vti_vtp(
     minBounds,           # (x0, y0, z0)
     dx,                  # scalar spacing
     particle_positions,  # shape (N, 3)
-    particle_radius=0.5  # optional radius field or scalar
+    particle_radius=0.5, # optional radius field or scalar
+    particle_velocity=None,  # shape (N, 3)
+    particle_ys=None,    # shape (N,)
+    particle_damage=None, # shape (N,)
+    particle_mean_stress=None,  # shape (N,)
+    particle_von_mises=None     # shape (N,)
 ):
     os.makedirs(os.path.dirname(output_prefix), exist_ok=True)
 
@@ -286,11 +291,45 @@ def save_grid_and_particles_vti_vtp(
     polydata = vtk.vtkPolyData()
     polydata.SetPoints(points)
 
-    # Optional: add radius or other scalar fields
-    radius_array = np.full((positions.shape[0],), particle_radius, dtype=np.float32)
+    # Add radius
+    if np.isscalar(particle_radius):
+        radius_array = np.full((positions.shape[0],), particle_radius, dtype=np.float32)
+    else:
+        radius_array = particle_radius.astype(np.float32)
     vtk_radius = numpy_support.numpy_to_vtk(radius_array)
     vtk_radius.SetName("radius")
     polydata.GetPointData().AddArray(vtk_radius)
+
+    # Add velocity (vector)
+    if particle_velocity is not None:
+        vtk_velocity = numpy_support.numpy_to_vtk(particle_velocity.astype(np.float32))
+        vtk_velocity.SetName("velocity")
+        vtk_velocity.SetNumberOfComponents(3)
+        polydata.GetPointData().AddArray(vtk_velocity)
+
+    # Add yield stress (scalar)
+    if particle_ys is not None:
+        vtk_ys = numpy_support.numpy_to_vtk(particle_ys.astype(np.float32))
+        vtk_ys.SetName("yield_stress")
+        polydata.GetPointData().AddArray(vtk_ys)
+
+    # Add damage (scalar)
+    if particle_damage is not None:
+        vtk_damage = numpy_support.numpy_to_vtk(particle_damage.astype(np.float32))
+        vtk_damage.SetName("damage")
+        polydata.GetPointData().AddArray(vtk_damage)
+
+    # Add mean stress (scalar)
+    if particle_mean_stress is not None:
+        vtk_mean_stress = numpy_support.numpy_to_vtk(particle_mean_stress.astype(np.float32))
+        vtk_mean_stress.SetName("mean_stress")
+        polydata.GetPointData().AddArray(vtk_mean_stress)
+
+    # Add von Mises stress (scalar)
+    if particle_von_mises is not None:
+        vtk_von_mises = numpy_support.numpy_to_vtk(particle_von_mises.astype(np.float32))
+        vtk_von_mises.SetName("von_mises_stress")
+        polydata.GetPointData().AddArray(vtk_von_mises)
 
     writer_vtp = vtk.vtkXMLPolyDataWriter()
     writer_vtp.SetFileName(f"{output_prefix}_particles.vtp")
@@ -472,16 +511,27 @@ def save_mpm(
     nPoints,
     color_mode="damage",
 ):
-
-
+    # Compute mean stress and von Mises stress
+    sigma = particle_stress.numpy().astype(np.float64)  # (N, 3, 3)
+    mean_stress = np.trace(sigma, axis1=1, axis2=2) / 3.0  # (N,)
+    
+    # Deviatoric stress
+    identity = np.eye(3)
+    s = sigma - mean_stress[:, None, None] * identity  # (N, 3, 3)
+    von_mises = np.sqrt(1.5 * np.sum(s**2, axis=(1, 2)))  # (N,)
 
     # --- Save if requested ---
     save_grid_and_particles_vti_vtp(
-        output_prefix=f"{outputFolder}./sim_step_{bigStep}{counter:06d}",
+        output_prefix=f"{outputFolder}./sim_step_{bigStep}_{counter:06d}",
         grid_mass=grid_m.numpy(),
         minBounds=minBounds,
         dx=dx,
         particle_positions=particle_x.numpy(),
-        particle_radius=np.arange(0, nPoints, 1)  # Point Gaussian trick
+        particle_radius=particle_radius.numpy(),
+        particle_velocity=particle_v.numpy(),
+        particle_ys=ys.numpy(),
+        particle_damage=particle_damage.numpy(),
+        particle_mean_stress=mean_stress,
+        particle_von_mises=von_mises
     )
 

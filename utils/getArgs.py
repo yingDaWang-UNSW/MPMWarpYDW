@@ -38,29 +38,30 @@ def get_args():
     parser.add_argument("--outputFolder", type=str, default="./output/", help="Output folder for simulation results")
 
     # Domain & grid
-    parser.add_argument("--domainFile", type=str, default="./exampleDomains/annular_arch_particles.h5", help="Input HDF5 domain file")
+    parser.add_argument("--domainFile", type=str, default="./exampleDomains/annular_arch_particles.h5", 
+                        help="Input HDF5 domain file. Can contain spatial property arrays (density, E, nu, ys, alpha, hardening, softening, eta_shear, eta_bulk, strainCriteria)")
     parser.add_argument("--grid_padding", type=float, default=25.0, help="Padding around min/max bounds (m)")
     parser.add_argument("--grid_particle_spacing_scale", type=float, default=4.0, help="Multiplier for particle diameter to set grid spacing")
 
-    # Material properties
-    parser.add_argument("--density", type=float, default=3000.0, help="Density of material (kg/m³)")
-    parser.add_argument("--E", type=float, default=1e8, help="Young's modulus (Pa)")
-    parser.add_argument("--nu", type=float, default=0.2, help="Poisson's ratio")
+    # Material properties (used as defaults if not in HDF5)
+    parser.add_argument("--density", type=float, default=3000.0, help="Density of material (kg/m³) - default if not in HDF5")
+    parser.add_argument("--E", type=float, default=1e8, help="Young's modulus (Pa) - default if not in HDF5")
+    parser.add_argument("--nu", type=float, default=0.2, help="Poisson's ratio - default if not in HDF5")
     
     # Constitutive model selection
     parser.add_argument("--constitutive_model", type=int, default=0, help="0=Von Mises, 1=Drucker-Prager")
     
     # Von Mises parameters
-    parser.add_argument("--ys", type=float, default=3e8, help="Yield stress (Pa) - for Von Mises")
+    parser.add_argument("--ys", type=float, default=3e8, help="Yield stress (Pa) - for Von Mises, default if not in HDF5")
 
     # Drucker-Prager parameters
-    parser.add_argument("--alpha", type=float, default=0.5, help="Pressure sensitivity (α) - for Drucker-Prager")
+    parser.add_argument("--alpha", type=float, default=0.5, help="Pressure sensitivity (α) - for Drucker-Prager, default if not in HDF5")
 
     # Hardening/softening (both models)
-    parser.add_argument("--hardening", type=float, default=0, help="Hardening parameter")
-    parser.add_argument("--softening", type=float, default=0, help="Softening modulus")
-    parser.add_argument("--eta_shear", type=float, default=1e7, help="Shear viscosity")
-    parser.add_argument("--eta_bulk", type=float, default=1e7, help="Bulk viscosity")
+    parser.add_argument("--hardening", type=float, default=0, help="Hardening parameter - default if not in HDF5")
+    parser.add_argument("--softening", type=float, default=0, help="Softening modulus - default if not in HDF5")
+    parser.add_argument("--eta_shear", type=float, default=1e7, help="Shear viscosity - default if not in HDF5")
+    parser.add_argument("--eta_bulk", type=float, default=1e7, help="Bulk viscosity - default if not in HDF5")
 
     # Gravity
     parser.add_argument("--gravity", type=float, default=-9.81, help="Gravity (m/s²)")
@@ -70,7 +71,7 @@ def get_args():
     # Boundary & friction
     parser.add_argument("--boundFriction", type=float, default=0.2, help="Bounding box friction")
     parser.add_argument("--eff", type=float, default=0.05, help="Phase change efficiency")
-    parser.add_argument("--strainCriteria", type=float, default=0.05, help="Critical accumulated strain for phase change")
+    parser.add_argument("--strainCriteria", type=float, default=0.05, help="Critical accumulated strain for phase change - default if not in HDF5")
 
     # XPBD parameters
     parser.add_argument("--xpbd_relaxation", type=float, default=1.0, help="XPBD relaxation factor")
@@ -81,11 +82,6 @@ def get_args():
     parser.add_argument("--particle_cohesion", type=float, default=0.0, help="Cohesion for XPBD particles")
     parser.add_argument("--sleepThreshold", type=float, default=0.5, help="Sleep threshold for XPBD")
     
-    # MPM-XPBD coupling
-    parser.add_argument("--xpbd_contact_threshold", type=float, default=-1e20, 
-                        help="XPBD contact coupling threshold (m/s). -1e20=disabled (always couple), 0=compression only, >0=allow some separation")
-
-
     # Swelling
     parser.add_argument("--swellingRatio", type=float, default=0.2, help="Particle swelling ratio")
     parser.add_argument("--swellingActivationFactor", type=float, default=1.0, help="Swelling activation factor")
