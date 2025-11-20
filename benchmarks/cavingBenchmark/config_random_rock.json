@@ -1,0 +1,49 @@
+{
+  "dt": 1e-5,
+  "dtxpbd": 1e-4,
+  "nSteps": 50000,
+  "bigSteps": 100,
+  "residualThreshold": 1e-6,
+  
+  "rpic_damping": 0.0,
+  "grid_v_damping_scale": 0.995,
+  "update_cov": 1,
+  
+  "render": 1,
+  "saveFlag": 1,
+  "outputFolder": "./benchmarks/cavingBenchmark/output/",
+  "color_mode": "damage",
+  
+  "domainFile": "./benchmarks/cavingBenchmark/random_rock_domain_50x50x200.h5",
+  "grid_padding": 3.0,
+  "grid_particle_spacing_scale": 2.0,
+  
+  "constitutive_model": 1,
+  
+  "gravity": -9.81,
+  "K0": 0.5,
+  
+  "boundFriction": 0.4,
+  "eff": 0.5,
+  
+  "xpbd_relaxation": 1.0,
+  "dynamicParticleFriction": 0.05,
+  "staticVelocityThreshold": 1e-5,
+  "staticParticleFriction": 0.1,
+  "xpbd_iterations": 10,
+  "particle_cohesion": 0.0,
+  "sleepThreshold": 0.5,
+  
+  "swellingRatio": 0.0,
+  "swellingActivationFactor": 1.0,
+  "swellingMaxFactor": 1.0,
+  
+  "particle_v_max": 100.0,
+  
+  "_comment_1": "All material properties are loaded from HDF5 file",
+  "_comment_2": "Properties vary spatially as Gaussian random fields",
+  "_comment_3": "E: 5-20 GPa, ys: 10-100 MPa, cohesion: 1-10 MPa",
+  "_comment_4": "friction_angle: 25-45 deg, density: 2400-2800 kg/m³",
+  "_comment_5": "strainCriteria: 0.001-0.05, eta_shear: 1e5-1e6 Pa·s",
+  "_comment_6": "Use constitutive_model=1 for Drucker-Prager"
+}

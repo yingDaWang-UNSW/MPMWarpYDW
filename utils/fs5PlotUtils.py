@@ -440,6 +440,18 @@ def render_mpm(
             max_val=np.quantile(effective_ys, 0.9)+1
         )
 
+    elif color_mode == "ys":
+        sigma = particle_stress.numpy().astype(np.float64)  # (N,3,3)
+        mean_stress = np.trace(sigma, axis1=1, axis2=2) / 3.0
+        effective_ys = ys.numpy()
+        # import pdb
+        # pdb.set_trace()
+        colors = values_to_rgb(
+            effective_ys,
+            min_val=np.quantile(effective_ys, 0.1),
+            max_val=np.quantile(effective_ys, 0.9)+1
+        )
+
     elif color_mode == "stress":
         # 0 stress should always be the middle color
         sigma = particle_stress.numpy().astype(np.float64)  # (N,3,3)

@@ -45,7 +45,7 @@ domainFile = args.domainFile
 h5file = h5py.File(domainFile, "r")
 x = np.array(h5file["x"]).T
 particle_volume = np.array(h5file["particle_volume"])
-# x = x + np.random.rand(x.shape[0], x.shape[1])*0.1 # jitter to prevent stress chains
+# x = x + np.random.rand(x.shape[0], x.shape[1])*0.5 # jitter to prevent stress chains
 # delete the middle 20% of particles in z
 # x = x[~((x[:, 2] > np.percentile(x[:, 2], 40)) & (x[:, 2] < np.percentile(x[:, 2], 60)))]
 nPoints = x.shape[0]
@@ -394,6 +394,8 @@ for bigStep in range(0, bigSteps):
         stepStartTime = time.time()
         residual.zero_()  # reset residual at each step
         numActiveParticles.zero_()  # reset active particle count at each step
+        if counter > 10000:
+            gravity = wp.vec3(0.0, 0.0, 0.0)  # disable gravity after 10000 steps to allow settling
         # perform the mpm simulation step
         simulationRoutines.mpmSimulationStep(
             particle_x,

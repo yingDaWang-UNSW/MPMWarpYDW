@@ -5,8 +5,8 @@
   "bigSteps": 500,
   "residualThreshold": 0.00000005,
   
-  "rpic_damping": 0,
-  "grid_v_damping_scale": 1,
+  "rpic_damping": 0.2,
+  "grid_v_damping_scale": 1.1,
   "update_cov": 1,
   
   "render": 1,
@@ -24,7 +24,7 @@
 
   "ys": 1e10,
   "alpha": 0.3,
-  "hardening": 0.3,
+  "hardening": 0.0,
   "softening": 0.0,
   "eta_shear": 1e6,
   "eta_bulk": 1e6,
@@ -32,9 +32,9 @@
   "gravity": -9.81,
   "K0": 0.5,
   
-  "boundFriction": 0.2,
-  "eff": 0.1,
-  "strainCriteria": 0.05,
+  "boundFriction": 0.0,
+  "eff": 0.0,
+  "strainCriteria": 500000,
   
   "xpbd_relaxation": 1.0,
   "dynamicParticleFriction": 0.05,

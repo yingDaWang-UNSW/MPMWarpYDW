@@ -15,13 +15,17 @@ The coupling enables seamless simulation of processes like rock avalanches, land
 
 ### Material Point Method (MPM)
 - **Multiplicative elastoplasticity** with logarithmic strain measures
-- **Von Mises yield criterion** with return mapping
+- **Dual constitutive models**: 
+  - **Von Mises** (pressure-independent, J2 plasticity)
+  - **Drucker-Prager** (pressure-dependent, frictional materials with dilatancy)
+- **Return mapping** with non-associated flow for realistic granular behavior
 - **Damage mechanics** based on accumulated plastic strain
 - **Phase transition** from continuum to discrete particles at critical damage
 - **Kelvin-Voigt viscoelasticity** for rate-dependent behavior
 - **APIC transfer scheme** (Affine Particle-In-Cell) for reduced numerical dissipation
 - **Optional RPIC** (Rotated PIC) for damping control
 - **Grid-based boundary conditions** with Coulomb friction
+- **Spatially-varying properties**: Load heterogeneous material fields from HDF5
 
 ### Extended Position Based Dynamics (XPBD)
 - **Particle-particle contact resolution** using hash grid for efficient neighbor search
@@ -33,7 +37,9 @@ The coupling enables seamless simulation of processes like rock avalanches, land
 - **Velocity clamping** to prevent excessive velocities during phase change
 
 ### Coupling Mechanics
-- **Two-way coupling** via grid: XPBD particles contribute mass and momentum to MPM grid
+- **Hybrid coupling approach**: 
+  - **Mass via grid**: XPBD particles contribute mass to MPM grid (prevents spurious pulling forces)
+  - **Momentum via contact**: Direct particle contact forces handle interaction (physically realistic)
 - **Energy-based velocity initialization**: Elastic strain energy converts to kinetic energy during phase transition
 - **Smooth velocity clipping**: Prevents shock loading when particles first enter XPBD regime
 
@@ -70,42 +76,89 @@ python runMPMYDW.py --config ./benchmarks/generalBenchmark/config_quick_test.jso
 
 ### Creating Custom Simulations
 
-1. **Prepare particle domain**: Create HDF5 file with particle positions and volumes
+1. **Prepare particle domain**: Create HDF5 file with required fields
    ```python
-   # See exampleDomains/createInputHDF5.py for example
-   # For spatially-varying properties, see benchmarks/spatialBenchmark/
+   # Required fields:
+   # - 'x': particle positions, shape (3, n_particles)
+   # - 'particle_volume': volume per particle, shape (n_particles,)
+   
+   # Optional spatial property fields:
+   # - 'density', 'E', 'nu' - elastic properties
+   # - 'ys', 'alpha' - yield properties
+   # - 'hardening', 'softening' - plasticity
+   # - 'eta_shear', 'eta_bulk' - viscosity
+   # - 'strainCriteria' - damage threshold
+   
+   # See examples in:
+   # - exampleDomains/createInputHDF5.py
+   # - benchmarks/spatialBenchmark/createInputHDF5.py
+   # - benchmarks/cavingBenchmark/createRandomRockDomain.py
    ```
 
 2. **Configure simulation**: Create a JSON config file (see `benchmarks/generalBenchmark/config_quick_test.json`)
 
 3. **Run**: `python runMPMYDW.py --config your_config.json`
 
-### Spatially-Varying Material Properties (NEW!)
+### Spatially-Varying Material Properties
 
-The simulator now supports **heterogeneous materials** with spatially-varying properties stored in HDF5 files:
+The simulator supports **heterogeneous materials** with spatially-varying properties stored in HDF5 files. This enables realistic modeling of rock masses with spatial variability using Gaussian random fields or structured property distributions.
 
+#### Available Benchmarks:
+
+**1. Spatial Benchmark** - Demonstration of property loading:
 ```bash
-# See the spatial benchmark for a complete example
 cd benchmarks/spatialBenchmark
-python createInputHDF5.py  # Generate HDF5 with spatial properties
+python createInputHDF5.py  # Generate example with spatial properties
 cd ../..
 python runMPMYDW.py --config ./benchmarks/spatialBenchmark/config_spatial.json
 ```
 
-Supported spatial properties:
-- `density`, `E`, `nu` - Elastic properties
-- `ys`, `alpha` - Yield properties (Von Mises / Drucker-Prager)
-- `hardening`, `softening` - Plasticity parameters
-- `eta_shear`, `eta_bulk` - Viscosity
-- `strainCriteria` - Damage threshold
+**2. Caving Benchmark** - Large-scale heterogeneous rock domain:
+```bash
+cd benchmarks/cavingBenchmark  
+python createRandomRockDomain.py  # Generate 50×50×200m domain (522k particles)
+python visualizeRandomRockDomain.py  # Inspect property fields
+cd ../..
+python runMPMYDW.py --config ./benchmarks/cavingBenchmark/config_random_rock.json
+```
 
-See `benchmarks/spatialBenchmark/QUICKSTART.md` for details.
+**3. Coupling Test** - MPM-XPBD interaction validation:
+```bash
+python runMPMYDW.py --config ./benchmarks/spatialBenchmark/config_coupling_test.json
+```
+
+#### Supported Spatial Properties:
+- `density`, `E`, `nu` - Elastic properties
+- `ys` - Yield stress (Von Mises or Drucker-Prager cohesion)
+- `alpha` - Drucker-Prager pressure sensitivity (friction angle effect)
+- `hardening`, `softening` - Plasticity evolution parameters
+- `eta_shear`, `eta_bulk` - Viscosity coefficients
+- `strainCriteria` - Failure strain threshold for damage
+
+If properties are not in HDF5, command-line/JSON config values are used as uniform defaults.
+
+See `benchmarks/spatialBenchmark/QUICKSTART.md` and `benchmarks/cavingBenchmark/README_random_rock.md` for details.
 
 ## Mathematical Model
 
-### MPM Constitutive Model
+### MPM Constitutive Models
 
-The framework uses a **multiplicative elasto-plasticity** model in the logarithmic strain space:
+The framework supports two plasticity models selected via `constitutive_model` parameter:
+
+#### **Von Mises (constitutive_model=0)**: Pressure-independent J2 plasticity
+- Suitable for metals and materials with negligible friction
+- Yield criterion: σ_eq ≤ (1 - D)·σ_y
+- Associated flow (no dilatancy)
+
+#### **Drucker-Prager (constitutive_model=1)**: Pressure-dependent frictional plasticity
+- Suitable for granular materials, rocks, soils
+- Yield criterion: σ_eq ≤ (1 - D)·(σ_y - α·p)
+  - α = pressure sensitivity (related to friction angle)
+  - p = mean stress (compression negative)
+- Non-associated flow with dilatancy (volume expansion during shear)
+- β = 0.3·α (dilation angle parameter)
+
+Both models use **multiplicative elasto-plasticity** in logarithmic strain space:
 
 1. **Elastic trial deformation gradient**: 
    - F_trial = (I + ∇v·dt)·F_n
@@ -119,15 +172,16 @@ The framework uses a **multiplicative elasto-plasticity** model in the logarithm
    - τ = 2μ·ε + λ·tr(ε)·I
    - τ_dev = deviatoric part
 
-4. **Von Mises yield criterion** with damage:
-   - σ_eq = ||τ_dev|| (equivalent stress)
-   - σ_y_eff = (1 - D)·σ_y (damage-modified yield stress)
-   - Yield condition: σ_eq ≤ σ_y_eff
+4. **Yield criterion** (damage-modified):
+   - **Von Mises**: σ_eq = ||τ_dev|| ≤ (1 - D)·σ_y
+   - **Drucker-Prager**: σ_eq ≤ (1 - D)·(σ_y - α·p) where p = tr(τ)/3
 
 5. **Return mapping** (if yielding):
    - Δγ = ||ε_dev|| - σ_y_eff/(2μ)
    - ε_plastic += √(2/3)·Δγ
-   - ε_corrected = ε - (Δγ/||ε_dev||)·ε_dev
+   - ε_dev_corrected = ε_dev - (Δγ/||ε_dev||)·ε_dev
+   - **Drucker-Prager only**: Add volumetric correction for dilatancy
+     - ε_vol_plastic = β·Δγ (β = 0.3·α)
 
 6. **Damage evolution**:
    - dD = dε_plastic / ε_critical
@@ -192,7 +246,9 @@ Uses position-based dynamics with constraint projection:
 - `density`: Material density (kg/m³)
 - `E`: Young's modulus (Pa)
 - `nu`: Poisson's ratio (dimensionless)
-- `ys`: Yield stress (Pa)
+- `constitutive_model`: 0=Von Mises, 1=Drucker-Prager
+- `ys`: Yield stress (Pa) - for Von Mises, or cohesion for Drucker-Prager
+- `alpha`: Pressure sensitivity (Drucker-Prager only, dimensionless, typically 0.2-0.5)
 - `hardening`: Strain hardening parameter (dimensionless)
 - `softening`: Strain softening parameter (dimensionless)
 - `eta_shear`: Shear viscosity (Pa·s)
@@ -204,8 +260,11 @@ Uses position-based dynamics with constraint projection:
 
 ### Grid & Domain
 - `domainFile`: Path to HDF5 particle domain file
+  - **Required fields**: `x` (shape 3×n_particles), `particle_volume` (shape n_particles)
+  - **Optional fields**: Spatial property arrays (see Spatially-Varying Properties section)
 - `grid_padding`: Padding around particle domain (m)
 - `grid_particle_spacing_scale`: Grid spacing = particle_diameter × scale
+- `K0`: Lateral earth pressure coefficient for initial geostatic stress (dimensionless, typically 0.4-0.7)
 
 ### XPBD Parameters
 - `xpbd_iterations`: Contact solver iterations per step
@@ -230,7 +289,9 @@ Uses position-based dynamics with constraint projection:
 - `boundFriction`: Friction on domain boundaries
 - `gravity`: Gravitational acceleration (m/s², typically -9.81)
 - `render`: Enable real-time rendering (0/1)
+- `color_mode`: Particle coloring scheme ("damage", "state", "effective_ys", "velocity", etc.)
 - `saveFlag`: Enable output file saving (0/1)
+- `outputFolder`: Directory for output VTK files
 
 ## Project Structure
 
@@ -256,16 +317,21 @@ MPMWarpYDW/
 ├── benchmarks/                  # Test cases
 │   ├── generalBenchmark/
 │   │   ├── config_quick_test.json  # Quick validation test
-│   │   ├── README.md               # Benchmark documentation
-│   │   └── run_benchmark.bat       # Windows batch script
-│   ├── spatialBenchmark/           # NEW: Spatial properties demo
+│   │   └── README.md               # Benchmark documentation
+│   ├── spatialBenchmark/           # Spatial properties demos
 │   │   ├── createInputHDF5.py      # Generate domain with spatial properties
-│   │   ├── config_spatial.json     # Configuration for spatial benchmark
+│   │   ├── createCouplingTest.py   # Generate MPM-XPBD coupling test
+│   │   ├── config_spatial.json     # Configuration for spatial demo
+│   │   ├── config_coupling_test.json  # MPM-XPBD coupling validation
+│   │   ├── plot_yield_surface.py   # Visualize Drucker-Prager yield surfaces
 │   │   ├── QUICKSTART.md           # Quick start guide
-│   │   ├── README.md               # Detailed documentation
-│   │   └── run_benchmark.bat       # Windows batch script
-│   └── cavingBenchmark/
-│       └── ...
+│   │   └── README.md               # Detailed documentation
+│   └── cavingBenchmark/            # Large-scale rock caving simulations
+│       ├── createRandomRockDomain.py  # Generate 50×50×200m heterogeneous domain
+│       ├── visualizeRandomRockDomain.py  # Visualize property fields
+│       ├── verify_hdf5_fields.py   # Verify HDF5 file correctness
+│       ├── config_random_rock.json # Configuration for random rock domain
+│       └── README_random_rock.md   # Detailed documentation
 │
 └── output/                      # Simulation results (VTK files)
     ├── sim_step_XXXXXX_particles.vtp
@@ -311,8 +377,49 @@ For each big step:
 4. **Visualization/Output**: Save VTK files if enabled
 
 ### Output Files
-- **Particles** (VTP): Position, velocity, radius, stress, damage, material label
+- **Particles** (VTP): Position, velocity, radius, stress, damage, material label, accumulated strain
 - **Grid** (VTI): Grid mass distribution (for visualization)
+
+## Important Implementation Details
+
+### Material Failure and Phase Transition
+
+When `damage >= 1.0` or `yield_stress <= 0`, material transitions from MPM (label=1) to XPBD (label=2):
+
+1. **Stress-free transition**: Material properties set to zero (μ=0, λ=0, ys=0) to prevent spurious forces
+2. **Energy release**: Elastic strain energy converts to kinetic energy with efficiency factor `eff`
+3. **Velocity initialization**: v_release = √(2·eff·u/ρ) added in direction of motion
+4. **One-way transition**: XPBD particles never return to MPM
+
+⚠️ **Critical**: If `strainCriteria` is very large (preventing XPBD transition) but `softening > hardening`, material can reach `ys <= 0` and become a "ghost" MPM particle (zero stiffness but still MPM). This causes P2G failure. **Solution**: Either:
+- Use `strainCriteria` small enough to allow transition before ys→0
+- Ensure `hardening >= softening` to prevent yield stress degradation
+- Force transition when `ys <= 0` even if `damage < 1.0`
+
+### Plasticity Irreversibility
+
+Plastic deformation is enforced as **permanent** through three mechanisms:
+
+1. **Monotonic plastic strain accumulation**: `accumulated_strain += Δε_plastic` (never decreases)
+2. **Elastic strain reduction**: Plastic part removed from trial strain during return mapping
+3. **Implicit reference configuration update**: Only elastic deformation gradient F_elastic is stored and returned
+
+Upon unloading: stress→0, elastic strain→0, but `accumulated_strain > 0` remains permanently.
+
+### MPM-XPBD Coupling Strategy
+
+The coupling uses a **hybrid approach** to handle interaction between continuum (MPM) and discrete (XPBD) phases:
+
+- **Mass transfer via grid (P2G)**: XPBD particles contribute **only mass** to the MPM grid, not momentum
+  - Prevents spurious "pulling" forces when XPBD particles move away from MPM continuum
+  - Allows MPM to feel the presence of XPBD material without artificial momentum coupling
+  
+- **Momentum transfer via contact forces**: Direct particle-particle contact detection between XPBD and MPM particles
+  - Properly handles compression and interaction forces
+  - Contact forces computed separately from grid operations
+  - More physically realistic than momentum smearing through the grid
+
+This hybrid approach provides stable, physically-meaningful coupling without artificial tensile forces or momentum artifacts.
 
 ## Code Architecture
 
@@ -335,23 +442,38 @@ All compute-intensive operations are implemented as **Warp kernels** for GPU exe
 ## Physics Validity & Limitations
 
 ### Assumptions
-- Small rotation per timestep (for logarithmic strain)
-- Isotropic materials (no pre-existing fabric)
-- Rate-independence (viscous terms for numerical stability only)
+- Small rotation per timestep (for logarithmic strain validity)
+- Isotropic materials (no pre-existing fabric or anisotropy)
+- Rate-independence (viscous terms for numerical stability only, not rate-dependent strength)
 - No thermal coupling
 - No pore pressure/fluid coupling
+- Adiabatic energy release during phase transition
+
+### Constitutive Model Limitations
+
+**Von Mises**:
+- ✅ Suitable for: Metals, clays (undrained), materials with negligible friction
+- ❌ Not suitable for: Granular materials, rocks, sands (use Drucker-Prager)
+
+**Drucker-Prager**:
+- ✅ Suitable for: Rocks, soils, granular materials, frictional-cohesive materials
+- ✅ Pressure-dependent yielding (deeper = stronger)
+- ✅ Non-associated flow with dilatancy (volume expansion during shear)
+- ⚠️ Simplified: No tension cutoff, no corner flow (Mohr-Coulomb equivalent)
 
 ### Numerical Considerations
 - **CFL condition**: dx/dt > max(particle velocity)
 - **Yield stress**: Should be >> bulk modulus × strain increment for stability
-- **Grid resolution**: Typically 4× particle diameter
-- **Damage convergence**: Requires multiple big steps for quasi-static loading
+- **Damage softening**: Risk of "ghost particles" if `strainCriteria` too large (see Implementation Details)
+- **Grid resolution**: Typically 2-4× particle diameter for convergence
+- **XPBD iterations**: 4-10 iterations needed for accurate contact resolution
 
 ### Validation
-- Energy conservation (elastic regime)
+- Energy conservation (elastic regime, pre-damage)
 - Momentum conservation (P2G + G2P)
-- Yield surface accuracy (return mapping)
+- Yield surface accuracy (return mapping within tolerance)
 - Contact resolution (penetration < 1% particle radius)
+- Plastic irreversibility (load-unload cycles verify permanent strain)
 
 ## Citation
 

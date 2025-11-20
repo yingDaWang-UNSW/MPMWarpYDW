@@ -406,7 +406,6 @@ def drucker_prager_return_mapping(
     tau_dev = tau - p_stress * wp.vec3(1.0)
 
     # Modified yield stress due to damage
-    D = damage[p]
     sigma_eq = wp.length(tau_dev)
     # Add pressure effect to yield stress (Drucker-Prager-like)
     # α controls pressure sensitivity (friction angle effect)
@@ -414,9 +413,9 @@ def drucker_prager_return_mapping(
     # - Compression (p < 0): -α·p > 0 → increases yield stress
     # - Tension (p > 0):     -α·p < 0 → decreases yield stress
     # If α = 0, behaves like standard Von Mises
-    yield_eff = (1.0 - D) * (yield_stress[p] - alpha[p] * p_stress)
+    yield_eff = (1.0 - damage[p]) * (yield_stress[p] - alpha[p] * p_stress)
 
-    if sigma_eq > yield_eff:
+    if sigma_eq > yield_eff or yield_stress[p] < 0.0 or yield_eff < 0.0:
         epsilon_dev_norm = wp.length(epsilon_dev) + 1e-6
 
         delta_gamma = epsilon_dev_norm - yield_eff / (2.0 * mu[p])
@@ -428,8 +427,10 @@ def drucker_prager_return_mapping(
         if strainCriteria[p] > 0.0:
             dD = plastic_strain_increment / strainCriteria[p]
             damage[p] = wp.min(1.0, damage[p] + dD)
-            D = damage[p]  # Update effective value
         else:
+            damage[p] = 1.0
+        # if ys<0 or yield_eff<0, force full damage
+        if yield_stress[p] < 0.0 or yield_eff < 0.0:
             damage[p] = 1.0
         # === Phase transition ===
         if damage[p] >= 1.0:
@@ -463,15 +464,34 @@ def drucker_prager_return_mapping(
             alpha[p] = 0.0
             return F_trial
         
-        # Plastic correction
-        epsilon = epsilon - (delta_gamma / epsilon_dev_norm) * epsilon_dev
-
+        # Plastic correction with non-associated flow for Drucker-Prager
+        # For associated flow (β = α): plastic flow parallel to yield surface
+        # For non-associated flow (β < α): different dilation angle
+        # β = 0: no volumetric plastic strain (incompressible plasticity)
+        # β = α: maximum dilatancy (associated flow)
+        
+        # Deviatoric correction (always present)
+        epsilon_dev_correction = (delta_gamma / epsilon_dev_norm) * epsilon_dev
+        
+        # Volumetric correction (dilatancy) - only for Drucker-Prager
+        # For materials with α > 0, add volumetric plastic strain
+        # Typically β ≈ 0.2-0.5 * α for rocks/soils
+        # beta = 0.0  # Could make this a material parameter
+        # TODO: For proper dilatancy, uncomment and tune beta:
+        beta = 0.3 * alpha[p]  # Dilation angle related to friction angle
+        volumetric_correction = beta * delta_gamma
+        
+        # Apply corrections
+        epsilon = epsilon - epsilon_dev_correction
+        mean_eps_new = mean_eps + volumetric_correction  # Add dilation
+        epsilon = epsilon + wp.vec3(volumetric_correction)  # Distribute to all components
+        
         # Update yield stress (softening or hardening)
         # dimensionless knobs: hardening[p] = \bar H, softening[p] = \bar S
         dsy = 2.0 * mu[p] * (hardening[p] - softening[p]) * delta_gamma
         yield_stress[p] = wp.max(0.0, yield_stress[p] + dsy)
 
-        # fail the material
+        # fail the material # this doenst work - I need to see why
         if yield_stress[p] < 0.0:
             yield_stress[p] = 0.0
             mu[p] = 0.0
