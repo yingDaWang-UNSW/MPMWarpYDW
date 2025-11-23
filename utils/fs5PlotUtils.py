@@ -341,23 +341,10 @@ def save_grid_and_particles_vti_vtp(
 
 def render_mpm(
     renderer,
-    particle_x,
-    particle_v,
-    particle_radius,
-    ys,
-    ys_base,
-    alpha,
-    particle_damage,
-    particle_stress,
-    materialLabel,
-    grid_m,
-    minBounds,
-    dx,
+    sim,
+    mpm,
     bigStep,
     counter,
-    nPoints,
-    saveFlag=False,
-    color_mode="damage",
     maxStress=None
 ):
     """
@@ -367,53 +354,41 @@ def render_mpm(
     ----------
     renderer : OpenGLRenderer
         Active renderer instance.
-    particle_x : wp.array (N,3)
-    particle_radius : wp.array (N,)
-    ys : wp.array (N,)
-    ys_base : wp.array (N,)
-    particle_damage : wp.array (N,)
-    particle_stress : wp.array (N,3,3)
-    grid_m : wp.array (nx,ny,nz)
-    minBounds : wp.vec3 or np.array(3,)
-    dx : float
+    sim : SimState
+        Global simulation state
+    mpm : MPMState
+        MPM-specific state
     bigStep : int
     counter : int
-    nPoints : int
-    saveFlag : bool
-    color_mode : str
-        Options: "yield_ratio", "damage", "vz", "von_mises", "stress", "sigma_zz"
-        Note: "von_mises" shows deviatoric stress (shape change) - looks uniform under geostatic loading
-              "sigma_zz" shows vertical stress component - displays geostatic gradient
-              "stress" shows mean stress (pressure)
-    maxStress : float or None
-        If color_mode="von_mises", this is the running max for normalization.
+    maxStress : float, optional
+        Maximum stress for color scaling
     """
 
     # --- Choose coloring ---
-    if color_mode == "yield_ratio":
+    if sim.color_mode == "yield_ratio":
         colors = values_to_rgb(
-            (ys.numpy() / ys_base.numpy()),
+            (mpm.ys.numpy() / mpm.ys_base.numpy()),
             min_val=0.0,
             max_val=1.0
         )
 
-    elif color_mode == "damage":
+    elif sim.color_mode == "damage":
         colors = values_to_rgb(
-            particle_damage.numpy(),
+            mpm.particle_damage.numpy(),
             min_val=0.0,
             max_val=1.0
         )
 
-    elif color_mode == "vz":
-        vz = particle_v.numpy()[:, 2]
+    elif sim.color_mode == "vz":
+        vz = sim.particle_v.numpy()[:, 2]
         colors = values_to_rgb(
             vz,
             min_val=vz.min(),
             max_val=vz.max()
         )
 
-    elif color_mode == "von_mises":
-        sigma = particle_stress.numpy().astype(np.float64)  # (N,3,3)
+    elif sim.color_mode == "von_mises":
+        sigma = mpm.particle_stress.numpy().astype(np.float64)  # (N,3,3)
         mean_stress = np.trace(sigma, axis1=1, axis2=2) / 3.0
         identity = np.eye(3)
         s = sigma - mean_stress[:, None, None] * identity
@@ -428,33 +403,29 @@ def render_mpm(
             max_val=maxStress
         )
 
-    elif color_mode == "effective_ys":
-        sigma = particle_stress.numpy().astype(np.float64)  # (N,3,3)
+    elif sim.color_mode == "effective_ys":
+        sigma = mpm.particle_stress.numpy().astype(np.float64)  # (N,3,3)
         mean_stress = np.trace(sigma, axis1=1, axis2=2) / 3.0
-        effective_ys = (ys.numpy() - alpha.numpy() * mean_stress)*(1-particle_damage.numpy())
-        # import pdb
-        # pdb.set_trace()
+        effective_ys = (mpm.ys.numpy() - mpm.alpha.numpy() * mean_stress)*(1-mpm.particle_damage.numpy())
         colors = values_to_rgb(
             effective_ys,
             min_val=np.quantile(effective_ys, 0.1),
             max_val=np.quantile(effective_ys, 0.9)+1
         )
 
-    elif color_mode == "ys":
-        sigma = particle_stress.numpy().astype(np.float64)  # (N,3,3)
+    elif sim.color_mode == "ys":
+        sigma = mpm.particle_stress.numpy().astype(np.float64)  # (N,3,3)
         mean_stress = np.trace(sigma, axis1=1, axis2=2) / 3.0
-        effective_ys = ys.numpy()
-        # import pdb
-        # pdb.set_trace()
+        effective_ys = mpm.ys.numpy()
         colors = values_to_rgb(
             effective_ys,
             min_val=np.quantile(effective_ys, 0.1),
             max_val=np.quantile(effective_ys, 0.9)+1
         )
 
-    elif color_mode == "stress":
+    elif sim.color_mode == "stress":
         # 0 stress should always be the middle color
-        sigma = particle_stress.numpy().astype(np.float64)  # (N,3,3)
+        sigma = mpm.particle_stress.numpy().astype(np.float64)  # (N,3,3)
         mean_stress = np.trace(sigma, axis1=1, axis2=2) / 3.0
         # Scale symmetrically around 0 based on larger magnitude
         stress_min = np.quantile(mean_stress, 0.01)
@@ -466,10 +437,10 @@ def render_mpm(
             max_val=max_magnitude    # Compression
         )
     
-    elif color_mode == "sigma_zz":
+    elif sim.color_mode == "sigma_zz":
         # Vertical stress component - shows geostatic gradient
         # Use absolute value: larger compression magnitude → hotter color
-        sigma = particle_stress.numpy().astype(np.float64)  # (N,3,3)
+        sigma = mpm.particle_stress.numpy().astype(np.float64)  # (N,3,3)
         sigma_zz = sigma[:, 2, 2]  # Vertical component (negative = compression)
         sigma_zz_abs = np.abs(sigma_zz)
         colors = values_to_rgb(
@@ -478,22 +449,22 @@ def render_mpm(
             max_val=np.quantile(sigma_zz_abs, 0.99)  # Maximum compression (bottom)
         )
     
-    elif color_mode == "state":
-        sigma = materialLabel.numpy().astype(np.float64)  # (N,3,3)
+    elif sim.color_mode == "state":
+        sigma = sim.materialLabel.numpy().astype(np.float64)  # (N,3,3)
         colors = values_to_rgb(
             sigma,
             min_val=0.0,
             max_val=np.max(sigma)
         )
     else:
-        raise ValueError(f"Unknown color_mode: {color_mode}")
+        raise ValueError(f"Unknown color_mode: {sim.color_mode}")
 
     # --- Render ---
     renderer.begin_frame()
     renderer.render_points(
-        points=particle_x,
+        points=sim.particle_x,
         name="points",
-        radius=particle_radius.numpy(),
+        radius=sim.particle_radius.numpy(),
         colors=colors,
         dynamic=True
     )
@@ -505,26 +476,25 @@ def render_mpm(
 
 
 def save_mpm(
-    outputFolder,
-    particle_x,
-    particle_v,
-    particle_radius,
-    ys,
-    ys_base,
-    alpha,
-    particle_damage,
-    particle_stress,
-    materialLabel,
-    grid_m,
-    minBounds,
-    dx,
+    sim,
+    mpm,
     bigStep,
-    counter,
-    nPoints,
-    color_mode="damage",
+    counter
 ):
+    """
+    Save particle and grid state to VTK files.
+    
+    Parameters
+    ----------
+    sim : SimState
+        Global simulation state
+    mpm : MPMState
+        MPM-specific state
+    bigStep : int
+    counter : int
+    """
     # Compute mean stress and von Mises stress
-    sigma = particle_stress.numpy().astype(np.float64)  # (N, 3, 3)
+    sigma = mpm.particle_stress.numpy().astype(np.float64)  # (N, 3, 3)
     mean_stress = np.trace(sigma, axis1=1, axis2=2) / 3.0  # (N,)
     
     # Deviatoric stress
@@ -534,15 +504,15 @@ def save_mpm(
 
     # --- Save if requested ---
     save_grid_and_particles_vti_vtp(
-        output_prefix=f"{outputFolder}./sim_step_{bigStep}_{counter:06d}",
-        grid_mass=grid_m.numpy(),
-        minBounds=minBounds,
-        dx=dx,
-        particle_positions=particle_x.numpy(),
-        particle_radius=particle_radius.numpy(),
-        particle_velocity=particle_v.numpy(),
-        particle_ys=ys.numpy(),
-        particle_damage=particle_damage.numpy(),
+        output_prefix=f"{sim.outputFolder}/sim_step_{bigStep:04d}{counter:06d}",
+        grid_mass=mpm.grid_m.numpy(),
+        minBounds=sim.minBounds,
+        dx=sim.dx,
+        particle_positions=sim.particle_x.numpy(),
+        particle_radius=sim.particle_radius.numpy(),
+        particle_velocity=sim.particle_v.numpy(),
+        particle_ys=mpm.ys.numpy(),
+        particle_damage=mpm.particle_damage.numpy(),
         particle_mean_stress=mean_stress,
         particle_von_mises=von_mises
     )

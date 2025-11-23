@@ -233,11 +233,6 @@ def compute_stress_from_F_trial(
 
             stress = (stress + wp.transpose(stress)) / 2.0  # enfore symmetry
 
-            # NOTE: Gravitational stress is NOT added here because:
-            # 1. It would not be persistent (F tracks deformation from reference, not absolute stress)
-            # 2. Instead, we initialize geostatic stress at t=0 (via initialize_geostatic_stress)
-            # 3. And apply gravity as body force in grid update to maintain equilibrium
-            
             # === Kelvin-Voigt damping ===
             #TODO: eta should scale with damage, can add rayleigh high and low frequency damping
             # Get symmetric part of velocity gradient
@@ -508,151 +503,6 @@ def drucker_prager_return_mapping(
 
     else:
         return F_trial
-
-
-
-
-@wp.func
-def drucker_prager_return_mapping_old(
-    F_trial: wp.mat33,
-    particlePosition: wp.array(dtype=wp.vec3),
-    particleVelocity: wp.array(dtype=wp.vec3),
-    initialPhaseChangePosition: wp.array(dtype=wp.vec3),
-    initialPhaseChangeVelocity: wp.array(dtype=wp.vec3),
-    materialLabel: wp.array(dtype=wp.int32),
-    particle_accumulated_strain: wp.array(dtype=float),
-    damage: wp.array(dtype=float),
-    mu: wp.array(dtype=float),
-    lam: wp.array(dtype=float),
-    cohesion: wp.array(dtype=float),
-    friction_angle: wp.array(dtype=float),
-    dilation_angle: wp.array(dtype=float),
-    tension_cutoff: wp.array(dtype=float),
-    hardening: wp.array(dtype=float),
-    softening: wp.array(dtype=float),
-    density: wp.array(dtype=float),
-    strainCriteria: wp.array(dtype=float),
-    efficiency: float,
-    p: int
-):
-    """
-    Simplified Drucker-Prager for rock caving:
-    - Pressure-dependent yielding (cohesion + friction)
-    - Non-associated flow (dilatancy)
-    - Tension cutoff
-    - Cohesion degradation with damage
-    """
-    # SVD decomposition
-    U = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-    V = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-    sig_old = wp.vec3(0.0)
-    wp.svd3(F_trial, U, sig_old, V)
-    
-    sig = wp.vec3(wp.max(sig_old[0], 0.01), wp.max(sig_old[1], 0.01), wp.max(sig_old[2], 0.01))
-    epsilon = wp.vec3(wp.log(sig[0]), wp.log(sig[1]), wp.log(sig[2]))
-    
-    # Trial stress
-    tau = 2.0 * mu[p] * epsilon + lam[p] * (epsilon[0] + epsilon[1] + epsilon[2]) * wp.vec3(1.0)
-    
-    # Stress invariants (positive = compression)
-    p_stress = (tau[0] + tau[1] + tau[2]) / 3.0
-    tau_dev = tau - p_stress * wp.vec3(1.0)
-    q = wp.sqrt(1.5) * wp.length(tau_dev)
-    
-    # Damage-dependent cohesion (degrades exponentially)
-    D = damage[p]
-    c_eff = cohesion[p] * (1.0 - D)  # Simple linear degradation
-    
-    # Drucker-Prager parameters
-    phi = friction_angle[p]  # Already in radians
-    psi = dilation_angle[p]  # Already in radians
-    
-    sin_phi = wp.sin(phi)
-    cos_phi = wp.cos(phi)
-    sin_psi = wp.sin(psi)
-    
-    # Plane strain approximation
-    alpha = (2.0 * sin_phi) / (wp.sqrt(3.0) * (3.0 - sin_phi))
-    k = (6.0 * c_eff * cos_phi) / (wp.sqrt(3.0) * (3.0 - sin_phi))
-    beta = (2.0 * sin_psi) / (wp.sqrt(3.0) * (3.0 - sin_psi))
-    
-    # Tension cutoff
-    sigma_t = tension_cutoff[p]
-    if p_stress < -sigma_t:
-        # Tensile failure
-        damage[p] = 1.0
-        materialLabel[p] = 2
-        initialPhaseChangePosition[p] = particlePosition[p]
-        
-        rho = density[p]
-        u = 0.5 * (tau[0] * epsilon[0] + tau[1] * epsilon[1] + tau[2] * epsilon[2])
-        u = wp.max(u, 0.0)
-        v_expected = wp.sqrt(2.0 * efficiency * u / rho)
-        
-        v_dir = wp.normalize(particleVelocity[p] + wp.vec3(1e-12))
-        particleVelocity[p] = particleVelocity[p] + v_expected * v_dir
-        initialPhaseChangeVelocity[p] = particleVelocity[p]
-        
-        return F_trial
-    
-    # Yield function: F = q + alpha*p - k
-    F_yield = q + alpha * p_stress - k
-    
-    if F_yield > 0.0:
-        # Return mapping
-        bulk_modulus = lam[p] + 2.0 * mu[p] / 3.0
-        denom = 3.0 * mu[p] + 9.0 * bulk_modulus * alpha * beta
-        
-        delta_gamma = F_yield / denom if denom > 1e-12 else 0.0
-        
-        # Plastic strain
-        plastic_increment = delta_gamma * wp.sqrt(1.0 + beta * beta / 3.0)
-        particle_accumulated_strain[p] += plastic_increment
-        
-        # Damage evolution
-        if strainCriteria[p] > 0.0:
-            dD = plastic_increment / strainCriteria[p]
-            damage[p] = wp.min(1.0, damage[p] + dD)
-        
-        # Phase transition check
-        if damage[p] >= 1.0:
-            materialLabel[p] = 2
-            initialPhaseChangePosition[p] = particlePosition[p]
-            
-            rho = density[p]
-            u = 0.5 * (tau[0] * epsilon[0] + tau[1] * epsilon[1] + tau[2] * epsilon[2])
-            u = wp.max(u, 0.0)
-            v_expected = wp.sqrt(2.0 * efficiency * u / rho)
-            
-            v_dir = wp.normalize(particleVelocity[p] + wp.vec3(1e-12))
-            particleVelocity[p] = particleVelocity[p] + v_expected * v_dir
-            initialPhaseChangeVelocity[p] = particleVelocity[p]
-            
-            return F_trial
-        
-        # Update stresses
-        p_stress_new = p_stress - 3.0 * bulk_modulus * beta * delta_gamma
-        q_new = wp.max(q - 3.0 * mu[p] * delta_gamma, 0.0)
-        
-        # Reconstruct stress
-        if q > 1e-12:
-            tau_new = (q_new / q) * tau_dev + p_stress_new * wp.vec3(1.0)
-        else:
-            tau_new = p_stress_new * wp.vec3(1.0)
-        
-        # Back to strain
-        trace_tau = tau_new[0] + tau_new[1] + tau_new[2]
-        epsilon_new = (tau_new - lam[p] * trace_tau * wp.vec3(1.0/3.0)) / (2.0 * mu[p])
-        
-        # Reconstruct F
-        sig_elastic = wp.mat33(
-            wp.exp(epsilon_new[0]), 0.0, 0.0,
-            0.0, wp.exp(epsilon_new[1]), 0.0,
-            0.0, 0.0, wp.exp(epsilon_new[2])
-        )
-        return U * sig_elastic * wp.transpose(V)
-    
-    return F_trial
 
 
 @wp.func
@@ -953,44 +803,44 @@ def collideBounds(
     grid_dim_y: int,
     grid_dim_z: int,
     friction_force: float,  # e.g., mu * g * dt
+    boundary_padding: int,  # Number of grid cells from boundary where BC applies
 ):
     grid_x, grid_y, grid_z = wp.tid()
-    padding = 3
     v = grid_v_out[grid_x, grid_y, grid_z]
 
-    if grid_x < padding and v[0] < 0.0:
+    if grid_x < boundary_padding and v[0] < 0.0:
         grid_v_out[grid_x, grid_y, grid_z] = wp.vec3(
             0.0,
             apply_coulomb_friction(v[1], friction_force),
             apply_coulomb_friction(v[2], friction_force),
         )
-    if grid_x >= grid_dim_x - padding and v[0] > 0.0:
+    if grid_x >= grid_dim_x - boundary_padding and v[0] > 0.0:
         grid_v_out[grid_x, grid_y, grid_z] = wp.vec3(
             0.0,
             apply_coulomb_friction(v[1], friction_force),
             apply_coulomb_friction(v[2], friction_force),
         )
 
-    if grid_y < padding and v[1] < 0.0:
+    if grid_y < boundary_padding and v[1] < 0.0:
         grid_v_out[grid_x, grid_y, grid_z] = wp.vec3(
             apply_coulomb_friction(v[0], friction_force),
             0.0,
             apply_coulomb_friction(v[2], friction_force),
         )
-    if grid_y >= grid_dim_y - padding and v[1] > 0.0:
+    if grid_y >= grid_dim_y - boundary_padding and v[1] > 0.0:
         grid_v_out[grid_x, grid_y, grid_z] = wp.vec3(
             apply_coulomb_friction(v[0], friction_force),
             0.0,
             apply_coulomb_friction(v[2], friction_force),
         )
 
-    if grid_z < padding and v[2] < 0.0:
+    if grid_z < boundary_padding and v[2] < 0.0:
         grid_v_out[grid_x, grid_y, grid_z] = wp.vec3(
             apply_coulomb_friction(v[0], friction_force),
             apply_coulomb_friction(v[1], friction_force),
             0.0,
         )
-    if grid_z >= grid_dim_z - padding and v[2] > 0.0:
+    if grid_z >= grid_dim_z - boundary_padding and v[2] > 0.0:
         grid_v_out[grid_x, grid_y, grid_z] = wp.vec3(
             apply_coulomb_friction(v[0], friction_force),
             apply_coulomb_friction(v[1], friction_force),
@@ -1003,10 +853,11 @@ def collideBoundsAbsorbing(
     grid_v_out: wp.array(dtype=wp.vec3, ndim=3),
     grid_dim_x: int,
     grid_dim_y: int,
-    grid_dim_z: int
+    grid_dim_z: int,
+    boundary_padding: int,  # Number of grid cells from boundary where BC applies
 ):
     grid_x, grid_y, grid_z = wp.tid()
-    padding = wp.float32(3.0)
+    padding = wp.float32(boundary_padding)
     damping_inner = wp.float32(1)
     damping_outer = wp.float32(0.0)
     one = wp.float32(1.0)

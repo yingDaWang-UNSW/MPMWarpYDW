@@ -10,7 +10,7 @@
   "update_cov": 1,
   
   "render": 1,
-  "saveFlag": 0,
+  "saveFlag": 1,
   "outputFolder": "./benchmarks/generalBenchmark/output/",
   "domainFile": "./benchmarks/generalBenchmark/annular_arch_particles.h5",
   "grid_padding": 10.0,
@@ -34,7 +34,7 @@
   
   "boundFriction": 0.0,
   "eff": 0.0,
-  "strainCriteria": 500000,
+  "strainCriteria": 0.05,
   
   "xpbd_relaxation": 1.0,
   "dynamicParticleFriction": 0.05,
