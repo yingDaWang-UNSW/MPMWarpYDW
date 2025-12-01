@@ -90,7 +90,7 @@ eta_bulk[:n_slab] = 1e7
 strainCriteria[:n_slab] = 1.0  # High threshold (won't convert to XPBD)
 
 # Block properties (WEAK - will fail easily)
-density[n_slab:] = 2000.0  # kg/m³ (lighter)
+density[n_slab:] = 300.0  # kg/m³ (lighter)
 E[n_slab:] = 1e7  # Pa (10 MPa - weak)
 ys[n_slab:] = 1e4  # Pa (10 kPa - weak, will yield under its own weight)
 alpha[n_slab:] = 0.0  # DISABLE pressure hardening for weak block (allow it to fail)
@@ -98,7 +98,7 @@ hardening[n_slab:] = 0.0
 softening[n_slab:] = 0.5  # Softens rapidly after yield
 eta_shear[n_slab:] = 1e5  # Pa·s (low viscosity)
 eta_bulk[n_slab:] = 1e5
-strainCriteria[n_slab:] = 0.000001  # Zero - convert to XPBD immediately upon yielding
+strainCriteria[n_slab:] = 0  # Zero - convert to XPBD immediately upon yielding
 
 # --- Print statistics ---
 print("\n=== Material Properties ===")
@@ -126,7 +126,7 @@ print("  4. Check if slab experiences realistic load from XPBD particles")
 print("=====================================\n")
 
 # --- Save to HDF5 ---
-h5_filename = "./coupling_test_domain.h5"
+h5_filename = "./benchmarks/spatialBenchmark/coupling_test_domain_light.h5"
 with h5py.File(h5_filename, "w") as h5file:
     # Geometry (transpose for expected format)
     h5file.create_dataset("x", data=all_coords.T)
@@ -166,7 +166,7 @@ layer_label[:n_slab] = 0  # Slab
 layer_label[n_slab:] = 1  # Block
 cloud["layer"] = layer_label
 
-vtp_filename = "./coupling_test_domain.vtp"
+vtp_filename = "./benchmarks/spatialBenchmark/coupling_test_domain_light.vtp"
 cloud.save(vtp_filename)
 print(f"Saved VTP: {vtp_filename}")
 print("Open in ParaView and color by 'ys' or 'layer' to see the two regions")

@@ -225,12 +225,19 @@ def apply_mpm_contact_impulses(
     v_final: wp.array(dtype=wp.vec3),
     dt: float,
     v_max: float,
+    coupling_strength: float,
     v_out: wp.array(dtype=wp.vec3),
 ):
     """
     Post-convergence treatment for MPM particles:
     Convert the converged XPBD position change into a velocity impulse
     without actually changing the MPM particle position (MPM solver controls position).
+    
+    Args:
+        coupling_strength: Empirically tuned factor (typically 0.2-0.3) that scales
+                          XPBD position correction to MPM velocity impulse.
+                          Related to soft coupling stiffness and stability.
+                          Lower = softer coupling, higher = stiffer (may be unstable).
     
     This preserves:
     - XPBD convergence during iterations (all particles move)
@@ -246,8 +253,8 @@ def apply_mpm_contact_impulses(
         # x_final - x_orig = contact-induced position change from XPBD
         
         v_from_grid = v_orig[tid]
-        contact_impulse = (x_final[tid] - x_orig[tid]) / dt
-        
+        contact_impulse = (x_final[tid] - x_orig[tid]) / dt * coupling_strength
+        x_final[tid] = x_orig[tid]  # Reset position - MPM grid controls position
         v_corrected = v_from_grid + contact_impulse
         v_mag = wp.length(v_corrected)
         if v_mag > v_max:

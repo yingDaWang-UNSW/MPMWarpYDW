@@ -1,0 +1,48 @@
+{
+  "dt": 0.0005,
+  "dtxpbd": 0.01,
+  "nSteps": 20000,
+  "bigSteps": 1,
+  "residualThreshold": 0.00000005,
+  
+  "rpic_damping": 0,
+  "grid_v_damping_scale": 1,
+  "update_cov": 1,
+  
+  "render": 1,
+  "saveFlag": 1,
+  "render_interval": 0.1,
+  "outputFolder": "./benchmarks/spatialBenchmark/output_coupling_column_weak_light/",
+  "domainFile": "./benchmarks/spatialBenchmark/coupling_column_weak_light.h5",
+  "grid_padding": 15,
+  "grid_particle_spacing_scale": 4.0,
+  
+  "constitutive_model": 1,
+  
+  "gravity": -9.81,
+  "K0": 0.0,
+  
+  "boundaryCondition": "friction",
+  "boundFriction": 0,
+  "eff": 0.0,
+  
+  "xpbd_relaxation": 1.0,
+  "xpbd_mpm_coupling_strength": 0.25,
+  "dynamicParticleFriction": 0.5,
+  "staticVelocityThreshold": 1e-5,
+  "staticParticleFriction": 0.5,
+  "xpbd_iterations": 4,
+  "particle_cohesion": 0.0,
+  "sleepThreshold": 0.5,
+  
+  "swellingRatio": 0.0,
+  "swellingActivationFactor": 1.0,
+  "swellingMaxFactor": 1.0,
+  
+  "particle_v_max": 50.0,
+  "color_mode": "stress",
+  
+  "_comment": "Column Coupling Test - WEAK_LIGHT (10× lighter)",
+  "_comment2": "Tall column 50×50×200m, top half weak (converts to XPBD), 0.1× density",
+  "_comment3": "Expected stress at z=100m interface: ~294 kPa (10× less than WEAK_SAME_DENSITY)"
+}

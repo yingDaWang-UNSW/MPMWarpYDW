@@ -556,7 +556,7 @@ def p2g_apic_with_stress(
     #                       particle_v
     #                       particle_C
     p = wp.tid()
-    if activeLabel[p] == 1 and materialLabel[p] ==1: # only mpm particles contribute to grid, xpbd particles do not pull on the grid - they transfer directly to mpm via contact forces
+    if activeLabel[p] == 1 and materialLabel[p] == 1: # only mpm particles contribute to grid, xpbd particles do not pull on the grid - they transfer directly to mpm via contact forces
     # if activeLabel[p] == 1: # all materials contribute to the grid so that materials that rely on the grid can interact with other materials
 
         # xpbd particles contribute ONLY MASS
@@ -619,6 +619,69 @@ def p2g_apic_with_stress(
                     # MPM: full momentum + stress transfer
                     wp.atomic_add(grid_v_in, ix, iy, iz, v_in_add)
                     wp.atomic_add(grid_m, ix, iy, iz, weight * particle_mass[p])
+
+
+@wp.kernel
+def apply_xpbd_gravity_force_to_grid(
+    activeLabel: wp.array(dtype=wp.int32),
+    materialLabel: wp.array(dtype=wp.int32),
+    particle_x: wp.array(dtype=wp.vec3),
+    particle_mass: wp.array(dtype=float),
+    gravity: wp.vec3,
+    dx: float,
+    inv_dx: float,
+    minBounds: wp.vec3,
+    dt: float,
+    grid_v_in: wp.array(dtype=wp.vec3, ndim=3),
+):
+    """
+    Transfer XPBD gravitational force to grid as momentum impulse.
+    
+    This applies F = m_xpbd × g directly to grid velocity (as momentum), WITHOUT adding mass.
+    Result: Underlying MPM feels compression from XPBD weight, but no pulling
+    when XPBD moves away (no persistent mass on grid).
+    
+    Key insight: Momentum impulse is transient (cleared each frame), while mass
+    would be persistent (creates ghost mass artifacts when XPBD moves).
+    """
+    p = wp.tid()
+    if activeLabel[p] == 1 and materialLabel[p] == 2:  # XPBD particles only
+        # Compute gravitational force on this XPBD particle
+        F_gravity = particle_mass[p] * gravity
+        
+        # Momentum impulse: Δp = F × dt
+        momentum_impulse = F_gravity * dt
+        
+        # Distribute to grid using quadratic B-spline weights (same as P2G)
+        grid_pos = (particle_x[p] - minBounds) * inv_dx
+        base_pos_x = wp.int(grid_pos[0] - 0.5)
+        base_pos_y = wp.int(grid_pos[1] - 0.5)
+        base_pos_z = wp.int(grid_pos[2] - 0.5)
+        fx = grid_pos - wp.vec3(
+            wp.float(base_pos_x), wp.float(base_pos_y), wp.float(base_pos_z)
+        )
+        
+        wa = wp.vec3(1.5) - fx
+        wb = fx - wp.vec3(1.0)
+        wc = fx - wp.vec3(0.5)
+        w = wp.mat33(
+            wp.cw_mul(wa, wa) * 0.5,
+            wp.vec3(0.0, 0.0, 0.0) - wp.cw_mul(wb, wb) + wp.vec3(0.75),
+            wp.cw_mul(wc, wc) * 0.5,
+        )
+        
+        for i in range(0, 3):
+            for j in range(0, 3):
+                for k in range(0, 3):
+                    ix = base_pos_x + i
+                    iy = base_pos_y + j
+                    iz = base_pos_z + k
+                    weight = w[0, i] * w[1, j] * w[2, k]
+                    
+                    # Add momentum impulse (NOT mass!)
+                    # This affects grid velocity after normalization: Δv = Δp / m_grid
+                    # When XPBD moves away, this force disappears (grid_v_in cleared next frame)
+                    wp.atomic_add(grid_v_in, ix, iy, iz, weight * momentum_impulse)
 
 
 @wp.kernel
@@ -792,9 +855,31 @@ def update_cov(particle_cov: wp.array(dtype=float),
 
 # the domain is bounded by a box
 @wp.func
-def apply_coulomb_friction(v: float, friction_force: float) -> float:
+def apply_coulomb_friction(v: float, mu: float, dt: float, g: float) -> float:
+    """
+    Apply Coulomb friction to velocity component.
+    
+    Args:
+        v: Velocity component (m/s)
+        mu: Friction coefficient (dimensionless)
+        dt: Time step (s)
+        g: Gravity magnitude (m/s²)
+    
+    Returns:
+        Velocity after friction (m/s)
+    
+    Coulomb friction force: F_friction = μ * N = μ * m * g
+    Velocity change: Δv = (F/m) * dt = μ * g * dt
+    """
+    if wp.abs(v) < 1e-12:
+        return 0.0
+    
+    # Maximum velocity change due to friction this timestep
+    delta_v_friction = mu * g * dt
+    
+    # Apply friction: reduce velocity magnitude but don't reverse direction
     s = wp.sign(v)
-    return s * wp.max(wp.abs(v) - friction_force, 0.0)
+    return s * wp.max(wp.abs(v) - delta_v_friction, 0.0)
 
 @wp.kernel
 def collideBounds(
@@ -802,49 +887,51 @@ def collideBounds(
     grid_dim_x: int,
     grid_dim_y: int,
     grid_dim_z: int,
-    friction_force: float,  # e.g., mu * g * dt
+    friction_coefficient: float,  # μ (dimensionless)
+    dt: float,  # Time step (s)
+    gravity_magnitude: float,  # |g| (m/s²)
     boundary_padding: int,  # Number of grid cells from boundary where BC applies
 ):
     grid_x, grid_y, grid_z = wp.tid()
     v = grid_v_out[grid_x, grid_y, grid_z]
 
-    if grid_x < boundary_padding and v[0] < 0.0:
+    if grid_x <= boundary_padding and v[0] < 0.0:
         grid_v_out[grid_x, grid_y, grid_z] = wp.vec3(
-            0.0,
-            apply_coulomb_friction(v[1], friction_force),
-            apply_coulomb_friction(v[2], friction_force),
+            0.0,  # Stop normal velocity
+            apply_coulomb_friction(v[1], friction_coefficient, dt, gravity_magnitude),
+            apply_coulomb_friction(v[2], friction_coefficient, dt, gravity_magnitude),
         )
     if grid_x >= grid_dim_x - boundary_padding and v[0] > 0.0:
         grid_v_out[grid_x, grid_y, grid_z] = wp.vec3(
-            0.0,
-            apply_coulomb_friction(v[1], friction_force),
-            apply_coulomb_friction(v[2], friction_force),
+            0.0,  # Stop normal velocity
+            apply_coulomb_friction(v[1], friction_coefficient, dt, gravity_magnitude),
+            apply_coulomb_friction(v[2], friction_coefficient, dt, gravity_magnitude),
         )
 
-    if grid_y < boundary_padding and v[1] < 0.0:
+    if grid_y <= boundary_padding and v[1] < 0.0:
         grid_v_out[grid_x, grid_y, grid_z] = wp.vec3(
-            apply_coulomb_friction(v[0], friction_force),
-            0.0,
-            apply_coulomb_friction(v[2], friction_force),
+            apply_coulomb_friction(v[0], friction_coefficient, dt, gravity_magnitude),
+            0.0,  # Stop normal velocity
+            apply_coulomb_friction(v[2], friction_coefficient, dt, gravity_magnitude),
         )
     if grid_y >= grid_dim_y - boundary_padding and v[1] > 0.0:
         grid_v_out[grid_x, grid_y, grid_z] = wp.vec3(
-            apply_coulomb_friction(v[0], friction_force),
-            0.0,
-            apply_coulomb_friction(v[2], friction_force),
+            apply_coulomb_friction(v[0], friction_coefficient, dt, gravity_magnitude),
+            0.0,  # Stop normal velocity
+            apply_coulomb_friction(v[2], friction_coefficient, dt, gravity_magnitude),
         )
 
-    if grid_z < boundary_padding and v[2] < 0.0:
+    if grid_z <= boundary_padding and v[2] < 0.0:
         grid_v_out[grid_x, grid_y, grid_z] = wp.vec3(
-            apply_coulomb_friction(v[0], friction_force),
-            apply_coulomb_friction(v[1], friction_force),
-            0.0,
+            apply_coulomb_friction(v[0], friction_coefficient, dt, gravity_magnitude),
+            apply_coulomb_friction(v[1], friction_coefficient, dt, gravity_magnitude),
+            0.0,  # Stop normal velocity
         )
     if grid_z >= grid_dim_z - boundary_padding and v[2] > 0.0:
         grid_v_out[grid_x, grid_y, grid_z] = wp.vec3(
-            apply_coulomb_friction(v[0], friction_force),
-            apply_coulomb_friction(v[1], friction_force),
-            0.0,
+            apply_coulomb_friction(v[0], friction_coefficient, dt, gravity_magnitude),
+            apply_coulomb_friction(v[1], friction_coefficient, dt, gravity_magnitude),
+            0.0,  # Stop normal velocity
         )
 
 
@@ -899,3 +986,269 @@ def collideBoundsAbsorbing(
         layer_factor = (padding - wp.float32(grid_dim_z - 1 - grid_z)) / padding
         damping = damping_outer * layer_factor + damping_inner * (one - layer_factor)
         grid_v_out[grid_x, grid_y, grid_z] = v * damping
+
+
+@wp.kernel
+def collideBoundsRestitution(
+    grid_v_out: wp.array(dtype=wp.vec3, ndim=3),
+    grid_dim_x: int,
+    grid_dim_y: int,
+    grid_dim_z: int,
+    restitution: float,  # Coefficient of restitution (0=inelastic, 1=elastic)
+    friction_coefficient: float,  # μ (dimensionless) for tangential friction
+    dt: float,  # Time step (s)
+    gravity_magnitude: float,  # |g| (m/s²)
+    boundary_padding: int,  # Number of grid cells from boundary where BC applies
+):
+    """
+    Apply restitution-based boundary conditions (bounce-back with friction).
+    
+    Args:
+        grid_v_out: Grid velocity field
+        grid_dim_x/y/z: Grid dimensions
+        restitution: Coefficient of restitution (e ∈ [0,1])
+            - e = 0: perfectly inelastic (velocity = 0)
+            - e = 1: perfectly elastic (velocity reverses)
+            - e ∈ (0,1): partial energy loss
+        friction_coefficient: Coulomb friction coefficient for tangential directions
+        dt: Time step
+        gravity_magnitude: Magnitude of gravity
+        boundary_padding: Number of boundary cells
+    
+    Physics:
+        Normal: v_after = -e * v_before (elastic bounce)
+        Tangential: Coulomb friction applied (Δv = μ·g·dt)
+    """
+    grid_x, grid_y, grid_z = wp.tid()
+    v = grid_v_out[grid_x, grid_y, grid_z]
+
+    # -X boundary (colliding from right, v[0] < 0)
+    if grid_x <= boundary_padding and v[0] < 0.0:
+        grid_v_out[grid_x, grid_y, grid_z] = wp.vec3(
+            -restitution * v[0],  # Reverse and scale normal velocity
+            apply_coulomb_friction(v[1], friction_coefficient, dt, gravity_magnitude),  # Friction on tangent
+            apply_coulomb_friction(v[2], friction_coefficient, dt, gravity_magnitude)   # Friction on tangent
+        )
+    
+    # +X boundary (colliding from left, v[0] > 0)
+    if grid_x >= grid_dim_x - boundary_padding and v[0] > 0.0:
+        grid_v_out[grid_x, grid_y, grid_z] = wp.vec3(
+            -restitution * v[0],  # Reverse and scale normal velocity
+            apply_coulomb_friction(v[1], friction_coefficient, dt, gravity_magnitude),  # Friction on tangent
+            apply_coulomb_friction(v[2], friction_coefficient, dt, gravity_magnitude)   # Friction on tangent
+        )
+
+    # -Y boundary (colliding from top, v[1] < 0)
+    if grid_y <= boundary_padding and v[1] < 0.0:
+        grid_v_out[grid_x, grid_y, grid_z] = wp.vec3(
+            apply_coulomb_friction(v[0], friction_coefficient, dt, gravity_magnitude),  # Friction on tangent
+            -restitution * v[1],  # Reverse and scale normal velocity
+            apply_coulomb_friction(v[2], friction_coefficient, dt, gravity_magnitude)   # Friction on tangent
+        )
+    
+    # +Y boundary (colliding from bottom, v[1] > 0)
+    if grid_y >= grid_dim_y - boundary_padding and v[1] > 0.0:
+        grid_v_out[grid_x, grid_y, grid_z] = wp.vec3(
+            apply_coulomb_friction(v[0], friction_coefficient, dt, gravity_magnitude),  # Friction on tangent
+            -restitution * v[1],  # Reverse and scale normal velocity
+            apply_coulomb_friction(v[2], friction_coefficient, dt, gravity_magnitude)   # Friction on tangent
+        )
+
+    # -Z boundary (colliding from above, v[2] < 0)
+    if grid_z <= boundary_padding and v[2] < 0.0:
+        grid_v_out[grid_x, grid_y, grid_z] = wp.vec3(
+            apply_coulomb_friction(v[0], friction_coefficient, dt, gravity_magnitude),  # Friction on tangent
+            apply_coulomb_friction(v[1], friction_coefficient, dt, gravity_magnitude),  # Friction on tangent
+            -restitution * v[2]   # Reverse and scale normal velocity
+        )
+    
+    # +Z boundary (colliding from below, v[2] > 0)
+    if grid_z >= grid_dim_z - boundary_padding and v[2] > 0.0:
+        grid_v_out[grid_x, grid_y, grid_z] = wp.vec3(
+            apply_coulomb_friction(v[0], friction_coefficient, dt, gravity_magnitude),  # Friction on tangent
+            apply_coulomb_friction(v[1], friction_coefficient, dt, gravity_magnitude),  # Friction on tangent
+            -restitution * v[2]   # Reverse and scale normal velocity
+        )
+
+@wp.kernel
+def collideBoundsGradualFriction(
+    grid_v_out: wp.array(dtype=wp.vec3, ndim=3),
+    grid_dim_x: int,
+    grid_dim_y: int,
+    grid_dim_z: int,
+    friction_coefficient: float,
+    dt: float,
+    gravity_magnitude: float,
+    boundary_padding: int,
+):
+    """
+    Apply Coulomb friction boundary with gradual transition to reduce artifacts.
+    
+    Instead of abrupt velocity changes at boundary cells, this kernel:
+    - Applies full BC at outermost cells
+    - Gradually reduces BC strength moving inward
+    - Creates smooth transition zone over boundary_padding cells
+    
+    This minimizes stress fluctuations caused by discontinuous velocity fields.
+    """
+    grid_x, grid_y, grid_z = wp.tid()
+    v = grid_v_out[grid_x, grid_y, grid_z]
+    
+    # Compute distance from each boundary (normalized by padding)
+    # 0.0 = at boundary (full BC), 1.0 = at interior edge (no BC)
+    padding_float = wp.float32(boundary_padding)
+    
+    # -X boundary
+    if grid_x < boundary_padding and v[0] < 0.0:
+        fade = wp.float32(grid_x) / padding_float  # 0 at boundary, 1 at interior
+        v_normal = 0.0  # Stop normal component
+        v_tangent_y = apply_coulomb_friction(v[1], friction_coefficient * (1.0 - fade), dt, gravity_magnitude)
+        v_tangent_z = apply_coulomb_friction(v[2], friction_coefficient * (1.0 - fade), dt, gravity_magnitude)
+        # Blend between BC velocity and original velocity
+        grid_v_out[grid_x, grid_y, grid_z] = wp.vec3(
+            v_normal * (1.0 - fade) + v[0] * fade,
+            v_tangent_y,
+            v_tangent_z
+        )
+    
+    # +X boundary
+    elif grid_x >= grid_dim_x - boundary_padding and v[0] > 0.0:
+        fade = wp.float32(grid_dim_x - 1 - grid_x) / padding_float
+        v_normal = 0.0
+        v_tangent_y = apply_coulomb_friction(v[1], friction_coefficient * (1.0 - fade), dt, gravity_magnitude)
+        v_tangent_z = apply_coulomb_friction(v[2], friction_coefficient * (1.0 - fade), dt, gravity_magnitude)
+        grid_v_out[grid_x, grid_y, grid_z] = wp.vec3(
+            v_normal * (1.0 - fade) + v[0] * fade,
+            v_tangent_y,
+            v_tangent_z
+        )
+    
+    # -Y boundary
+    if grid_y < boundary_padding and v[1] < 0.0:
+        fade = wp.float32(grid_y) / padding_float
+        v_normal = 0.0
+        v_tangent_x = apply_coulomb_friction(v[0], friction_coefficient * (1.0 - fade), dt, gravity_magnitude)
+        v_tangent_z = apply_coulomb_friction(v[2], friction_coefficient * (1.0 - fade), dt, gravity_magnitude)
+        grid_v_out[grid_x, grid_y, grid_z] = wp.vec3(
+            v_tangent_x,
+            v_normal * (1.0 - fade) + v[1] * fade,
+            v_tangent_z
+        )
+    
+    # +Y boundary
+    elif grid_y >= grid_dim_y - boundary_padding and v[1] > 0.0:
+        fade = wp.float32(grid_dim_y - 1 - grid_y) / padding_float
+        v_normal = 0.0
+        v_tangent_x = apply_coulomb_friction(v[0], friction_coefficient * (1.0 - fade), dt, gravity_magnitude)
+        v_tangent_z = apply_coulomb_friction(v[2], friction_coefficient * (1.0 - fade), dt, gravity_magnitude)
+        grid_v_out[grid_x, grid_y, grid_z] = wp.vec3(
+            v_tangent_x,
+            v_normal * (1.0 - fade) + v[1] * fade,
+            v_tangent_z
+        )
+    
+    # -Z boundary (ground)
+    if grid_z < boundary_padding and v[2] < 0.0:
+        fade = wp.float32(grid_z) / padding_float
+        v_normal = 0.0
+        v_tangent_x = apply_coulomb_friction(v[0], friction_coefficient * (1.0 - fade), dt, gravity_magnitude)
+        v_tangent_y = apply_coulomb_friction(v[1], friction_coefficient * (1.0 - fade), dt, gravity_magnitude)
+        grid_v_out[grid_x, grid_y, grid_z] = wp.vec3(
+            v_tangent_x,
+            v_tangent_y,
+            v_normal * (1.0 - fade) + v[2] * fade
+        )
+    
+    # +Z boundary (top)
+    elif grid_z >= grid_dim_z - boundary_padding and v[2] > 0.0:
+        fade = wp.float32(grid_dim_z - 1 - grid_z) / padding_float
+        v_normal = 0.0
+        v_tangent_x = apply_coulomb_friction(v[0], friction_coefficient * (1.0 - fade), dt, gravity_magnitude)
+        v_tangent_y = apply_coulomb_friction(v[1], friction_coefficient * (1.0 - fade), dt, gravity_magnitude)
+        grid_v_out[grid_x, grid_y, grid_z] = wp.vec3(
+            v_tangent_x,
+            v_tangent_y,
+            v_normal * (1.0 - fade) + v[2] * fade
+        )
+
+@wp.kernel
+def update_C_and_F_from_velocity_change(
+    activeLabel: wp.array(dtype=wp.int32),
+    materialLabel: wp.array(dtype=wp.int32),
+    particle_x: wp.array(dtype=wp.vec3),
+    particle_v_old: wp.array(dtype=wp.vec3),  # Velocity before contact impulse
+    particle_v_new: wp.array(dtype=wp.vec3),  # Velocity after contact impulse
+    particle_C: wp.array(dtype=wp.mat33),
+    particle_F: wp.array(dtype=wp.mat33),
+    particle_F_trial: wp.array(dtype=wp.mat33),
+    inv_dx: float,
+    minBounds: wp.vec3,
+    dt: float,
+    grid_v_out: wp.array(dtype=wp.vec3, ndim=3),
+):
+    """
+    Update APIC affine matrix C and deformation gradient F for MPM particles
+    after contact impulse has modified their velocity.
+    
+    This ensures consistency between particle_v, particle_C, and particle_F.
+    Without this, contact impulses would update velocity but leave C and F stale,
+    causing incorrect stress and momentum transfer in the next P2G step.
+    
+    Approach:
+    - Reconstruct C from grid velocity field (same as G2P)
+    - Update F_trial using velocity gradient (F_new = (I + ∇v·dt) * F_old)
+    - Only updates MPM particles that received contact impulses
+    """
+    p = wp.tid()
+    if activeLabel[p] == 1 and materialLabel[p] == 1:  # MPM particles only
+        # Check if velocity changed (contact impulse applied)
+        dv = particle_v_new[p] - particle_v_old[p]
+        if wp.length(dv) > 1e-12:  # Only update if velocity changed significantly
+            # Reconstruct C and F from grid (same as G2P but without position update)
+            grid_pos = (particle_x[p] - minBounds) * inv_dx
+            base_pos_x = wp.int(grid_pos[0] - 0.5)
+            base_pos_y = wp.int(grid_pos[1] - 0.5)
+            base_pos_z = wp.int(grid_pos[2] - 0.5)
+            fx = grid_pos - wp.vec3(
+                wp.float(base_pos_x), wp.float(base_pos_y), wp.float(base_pos_z)
+            )
+            wa = wp.vec3(1.5) - fx
+            wb = fx - wp.vec3(1.0)
+            wc = fx - wp.vec3(0.5)
+            w = wp.mat33(
+                wp.cw_mul(wa, wa) * 0.5,
+                wp.vec3(0.0, 0.0, 0.0) - wp.cw_mul(wb, wb) + wp.vec3(0.75),
+                wp.cw_mul(wc, wc) * 0.5,
+            )
+            dw = wp.mat33(fx - wp.vec3(1.5), -2.0 * (fx - wp.vec3(1.0)), fx - wp.vec3(0.5))
+            
+            new_C = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+            grad_v = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+            
+            for i in range(0, 3):
+                for j in range(0, 3):
+                    for k in range(0, 3):
+                        ix = base_pos_x + i
+                        iy = base_pos_y + j
+                        iz = base_pos_z + k
+                        dpos = wp.vec3(wp.float(i), wp.float(j), wp.float(k)) - fx
+                        weight = w[0, i] * w[1, j] * w[2, k]  # tricubic interpolation
+                        grid_v = grid_v_out[ix, iy, iz]
+                        
+                        # Reconstruct C (APIC affine velocity matrix)
+                        new_C = new_C + wp.outer(grid_v, dpos) * (weight * inv_dx * 4.0)
+                        
+                        # Reconstruct velocity gradient for F update
+                        dweight = compute_dweight(inv_dx, w, dw, i, j, k)
+                        grad_v = grad_v + wp.outer(grid_v, dweight)
+            
+            # Update C
+            particle_C[p] = new_C
+            
+            # Update F_trial: F_new = (I + ∇v·dt) * F_old
+            I33 = wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
+            F_tmp = (I33 + grad_v * dt) * particle_F[p]
+            particle_F_trial[p] = F_tmp
+
+
+# the domain is bounded by a box

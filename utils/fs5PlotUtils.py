@@ -260,7 +260,8 @@ def save_grid_and_particles_vti_vtp(
     particle_ys=None,    # shape (N,)
     particle_damage=None, # shape (N,)
     particle_mean_stress=None,  # shape (N,)
-    particle_von_mises=None     # shape (N,)
+    particle_von_mises=None,     # shape (N,)
+    particle_stress_tensor=None  # shape (N, 3, 3) or (N, 9)
 ):
     os.makedirs(os.path.dirname(output_prefix), exist_ok=True)
 
@@ -330,6 +331,25 @@ def save_grid_and_particles_vti_vtp(
         vtk_von_mises = numpy_support.numpy_to_vtk(particle_von_mises.astype(np.float32))
         vtk_von_mises.SetName("von_mises_stress")
         polydata.GetPointData().AddArray(vtk_von_mises)
+
+    # Add full stress tensor (6 components: xx, yy, zz, xy, xz, yz)
+    if particle_stress_tensor is not None:
+        # Ensure it's (N, 3, 3) shape
+        if particle_stress_tensor.ndim == 3:
+            N = particle_stress_tensor.shape[0]
+            # Extract symmetric components (xx, yy, zz, xy, xz, yz)
+            stress_components = np.zeros((N, 6), dtype=np.float32)
+            stress_components[:, 0] = particle_stress_tensor[:, 0, 0]  # xx
+            stress_components[:, 1] = particle_stress_tensor[:, 1, 1]  # yy
+            stress_components[:, 2] = particle_stress_tensor[:, 2, 2]  # zz
+            stress_components[:, 3] = particle_stress_tensor[:, 0, 1]  # xy
+            stress_components[:, 4] = particle_stress_tensor[:, 0, 2]  # xz
+            stress_components[:, 5] = particle_stress_tensor[:, 1, 2]  # yz
+            
+            vtk_stress = numpy_support.numpy_to_vtk(stress_components)
+            vtk_stress.SetName("stress_tensor")
+            vtk_stress.SetNumberOfComponents(6)
+            polydata.GetPointData().AddArray(vtk_stress)
 
     writer_vtp = vtk.vtkXMLPolyDataWriter()
     writer_vtp.SetFileName(f"{output_prefix}_particles.vtp")
@@ -514,6 +534,7 @@ def save_mpm(
         particle_ys=mpm.ys.numpy(),
         particle_damage=mpm.particle_damage.numpy(),
         particle_mean_stress=mean_stress,
-        particle_von_mises=von_mises
+        particle_von_mises=von_mises,
+        particle_stress_tensor=sigma  # Add full stress tensor
     )
 

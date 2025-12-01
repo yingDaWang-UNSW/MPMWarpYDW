@@ -21,7 +21,9 @@ domainFile = args.domainFile
 h5file = h5py.File(domainFile, "r")
 x = np.array(h5file["x"]).T
 particle_volume = np.array(h5file["particle_volume"])
-# x = x + np.random.rand(x.shape[0], x.shape[1])*0.5 # jitter to prevent stress chains
+particleDiameter = np.mean(particle_volume) ** 0.33
+dx = particleDiameter * args.grid_particle_spacing_scale
+# x = x + np.random.rand(x.shape[0], x.shape[1])*0.05*dx # jitter to prevent stress chains
 # delete the middle 20% of particles in z
 # x = x[~((x[:, 2] > np.percentile(x[:, 2], 40)) & (x[:, 2] < np.percentile(x[:, 2], 60)))]
 nPoints = x.shape[0]
@@ -31,23 +33,33 @@ print(f"Number of particles: {nPoints}")
 # Compute initial bounds from particle positions with padding
 particle_min = np.min(x, 0)
 particle_max = np.max(x, 0)
-mpmPadding = 2
+mpmPadding = 2  # Increased from 2 to reduce boundary artifacts
 
-particleDiameter = np.mean(particle_volume) ** 0.33
-dx = particleDiameter * args.grid_particle_spacing_scale
+
 invdx = 1.0 / dx
 
-# Apply uniform padding in X and Y, extra padding in Z (for gravity direction)
+# Parse boundary padding mask (6-digit binary: -X,+X,-Y,+Y,-Z,+Z)
+# 1 = use args.grid_padding (loose), 0 = use mpmPadding (tight)
+boundary_mask = args.boundary_padding_mask
+if len(boundary_mask) != 6 or not all(c in '01' for c in boundary_mask):
+    raise ValueError(f"boundary_padding_mask must be 6-digit binary string, got: {boundary_mask}")
+
+padding_flags = [int(c) for c in boundary_mask]
+print(f"Boundary padding mask: {boundary_mask} (-X,+X,-Y,+Y,-Z,+Z)")
+print(f"  1 = loose padding ({args.grid_padding*dx:.2f}m), 0 = tight padding ({mpmPadding*dx:.2f}m)")
+
+# Apply padding based on mask
+# Format: [minX, maxX, minY, maxY, minZ, maxZ]
 minBounds = np.array([
-    particle_min[0] - args.grid_padding*dx,
-    particle_min[1] - args.grid_padding*dx,
-    particle_min[2] - mpmPadding*dx # Extra padding below for stability
+    particle_min[0] - (args.grid_padding*dx if padding_flags[0] else mpmPadding*dx),  # -X
+    particle_min[1] - (args.grid_padding*dx if padding_flags[2] else mpmPadding*dx),  # -Y
+    particle_min[2] - (args.grid_padding*dx if padding_flags[4] else mpmPadding*dx)   # -Z
 ])
 
 maxBounds = np.array([
-    particle_max[0] + args.grid_padding*dx,
-    particle_max[1] + args.grid_padding*dx,
-    particle_max[2] + args.grid_padding * 2.0 * dx  # Extra padding above for falling particles
+    particle_max[0] + (args.grid_padding*dx if padding_flags[1] else mpmPadding*dx),  # +X
+    particle_max[1] + (args.grid_padding*dx if padding_flags[3] else mpmPadding*dx),  # +Y
+    particle_max[2] + (args.grid_padding*dx if padding_flags[5] else mpmPadding*dx)   # +Z
 ])
 
 gridDims = np.ceil((maxBounds - minBounds) / dx).astype(int)
@@ -196,6 +208,100 @@ wp.launch(kernel=mpmRoutines.get_float_array_product,
           inputs=[sim.particle_density, sim.particle_vol, sim.particle_mass],
           device=device)
 
+# ========== CFL Condition Estimation ==========
+print(f"\n{'='*60}")
+print("CFL CONDITION ANALYSIS")
+print(f"{'='*60}")
+
+# Compute wave speeds for stability analysis
+E_mean = np.mean(E)
+nu_mean = np.mean(nu)
+density_mean = np.mean(density)
+
+# Bulk modulus K and Shear modulus G
+K_mean = E_mean / (3 * (1 - 2*nu_mean))
+G_mean = E_mean / (2 * (1 + nu_mean))
+
+# P-wave speed (longitudinal wave, fastest)
+c_p = np.sqrt((K_mean + 4*G_mean/3) / density_mean)
+
+# S-wave speed (shear wave)
+c_s = np.sqrt(G_mean / density_mean)
+
+# CFL condition: dt < dx / c_max
+# For explicit time integration: dt < C * dx / c_p, where C ≈ 0.1-0.5 for MPM
+cfl_limit = dx / c_p
+cfl_number = args.dt * c_p / dx
+
+print(f"Material Properties (mean):")
+print(f"  E = {E_mean/1e6:.2f} MPa")
+print(f"  ν = {nu_mean:.3f}")
+print(f"  ρ = {density_mean:.1f} kg/m³")
+print(f"  K = {K_mean/1e6:.2f} MPa (bulk modulus)")
+print(f"  G = {G_mean/1e6:.2f} MPa (shear modulus)")
+
+print(f"\nWave Speeds:")
+print(f"  P-wave (longitudinal): c_p = {c_p:.1f} m/s")
+print(f"  S-wave (shear):        c_s = {c_s:.1f} m/s")
+
+print(f"\nGrid & Time Step:")
+print(f"  dx = {dx:.4f} m")
+print(f"  dt = {args.dt:.2e} s")
+
+print(f"\nCFL Analysis:")
+print(f"  CFL limit:  dt < {cfl_limit:.2e} s  (for C=1.0)")
+print(f"  CFL number: {cfl_number:.3f}")
+
+# Safety factor recommendations
+safety_factors = {
+    0.5: "Highly stable (conservative)",
+    0.3: "Recommended for MPM",
+    0.2: "Safe",
+    0.1: "Very conservative"
+}
+
+print(f"\n  Safety Factor Recommendations:")
+for factor, desc in safety_factors.items():
+    recommended_dt = factor * cfl_limit
+    if args.dt <= recommended_dt:
+        status = "✅"
+    else:
+        status = "⚠️"
+    print(f"    {status} C={factor}: dt < {recommended_dt:.2e} s  ({desc})")
+
+if cfl_number < 0.1:
+    print(f"\n  ✅ EXCELLENT: Very stable (CFL = {cfl_number:.3f} << 0.5)")
+elif cfl_number < 0.3:
+    print(f"\n  ✅ GOOD: Stable for MPM (CFL = {cfl_number:.3f} < 0.5)")
+elif cfl_number < 0.5:
+    print(f"\n  ⚠️  MARGINAL: Near stability limit (CFL = {cfl_number:.3f})")
+elif cfl_number < 1.0:
+    print(f"\n  ⚠️  RISKY: May be unstable (CFL = {cfl_number:.3f} > 0.5)")
+else:
+    print(f"\n  ❌ UNSTABLE: CFL condition violated (CFL = {cfl_number:.3f} > 1.0)!")
+    print(f"     Simulation will likely diverge!")
+
+# Time to traverse one grid cell
+traverse_time = dx / c_p
+steps_per_traverse = traverse_time / args.dt
+
+print(f"\nTime Scales:")
+print(f"  Time for wave to cross one cell: {traverse_time:.2e} s")
+print(f"  Timesteps per cell crossing:     {steps_per_traverse:.1f} steps")
+
+# Estimate based on domain size
+domain_diagonal = np.sqrt((maxBounds[0]-minBounds[0])**2 + 
+                          (maxBounds[1]-minBounds[1])**2 + 
+                          (maxBounds[2]-minBounds[2])**2)
+wave_crossing_time = domain_diagonal / c_p
+steps_for_wave_crossing = wave_crossing_time / args.dt
+
+print(f"  Domain diagonal:                 {domain_diagonal:.1f} m")
+print(f"  Wave crossing time (diagonal):   {wave_crossing_time:.3f} s")
+print(f"  Timesteps to cross domain:       {steps_for_wave_crossing:.0f} steps")
+
+print(f"{'='*60}\n")
+
 # Compute z_top for geostatic stress if not provided
 if args.z_top is None:
     z_top = float(np.max(x[:, 2]))  # Use max z-coordinate of particles
@@ -207,12 +313,21 @@ else:
 # to represent the prestressed state. This way, elastic stress from F will
 # automatically include geostatic compression.
 g_mag = np.abs(args.gravity)  # Magnitude of gravity
-wp.launch(
-    kernel=mpmRoutines.initialize_geostatic_F,
-    dim=sim.nPoints,
-    inputs=[sim.particle_x, mpm.particle_F, mpm.mu, mpm.lam, sim.particle_density, g_mag, z_top, mpm.K0],
-    device=device
-)
+if args.initialise_geostatic:
+    wp.launch(
+        kernel=mpmRoutines.initialize_geostatic_F,
+        dim=sim.nPoints,
+        inputs=[sim.particle_x, mpm.particle_F, mpm.mu, mpm.lam, sim.particle_density, g_mag, z_top, mpm.K0],
+        device=device
+    )
+else:
+    # set F to identity
+    wp.launch(
+        kernel=mpmRoutines.set_mat33_to_identity,
+        dim=sim.nPoints,
+        inputs=[mpm.particle_F],
+        device=device
+    )
 
 # Copy F to F_trial for first step
 wp.launch(kernel=mpmRoutines.set_mat33_to_copy,
@@ -262,35 +377,53 @@ print(f'XPBD domain: X=[{xpbd.minBoundsXPBD[0]:.2f}, {xpbd.maxBoundsXPBD[0]:.2f}
 
 # ========== Renderer Initialization ==========
 if sim.render:
-    # initialise renderer
-    renderer = fs5RendererCore.OpenGLRenderer(        
-    title=f"MPM",
-    scaling=1.0,
-    fps=60,
-    up_axis="z",
-    screen_width=1024,
-    screen_height=768,
-    near_plane=0.01,
-    far_plane=10000,
-    camera_fov=75.0,
-    background_color=(0,0,0),
-    draw_grid=True,
-    draw_sky=False,
-    draw_axis=True,
-    show_info=True,
-    render_wireframe=False,
-    axis_scale=1.0,
-    vsync=False,
-    headless=False,
-    enable_backface_culling=True)
-    renderer._camera_speed = 0.5
-    # orient the renderer to look at the centroid of the particles
-    renderer=fs5PlotUtils.look_at_centroid(x,renderer,renderer.camera_fov)
-    maxStress=0.0
-    maxStrain=0.0
+    if args.render_backend == "usd":
+        # USD renderer - GPU-direct rendering with zero CPU transfers
+        from utils import usdRenderer
+        usd_output_path = f"{sim.outputFolder}/usd"
+        renderer = usdRenderer.WarpUSDRenderer(
+            output_path=usd_output_path,
+            fps=60,
+            up_axis="Z"
+        )
+        print(f"Initialized USD renderer: {usd_output_path}")
+        maxStress = 0.0
+        maxStrain = 0.0
+        
+    elif args.render_backend == "opengl":
+        # OpenGL renderer - interactive real-time viewer
+        renderer = fs5RendererCore.OpenGLRenderer(        
+            title=f"MPM",
+            scaling=1.0,
+            fps=60,
+            up_axis="z",
+            screen_width=1024,
+            screen_height=768,
+            near_plane=0.01,
+            far_plane=10000,
+            camera_fov=75.0,
+            background_color=(0,0,0),
+            draw_grid=True,
+            draw_sky=False,
+            draw_axis=True,
+            show_info=True,
+            render_wireframe=False,
+            axis_scale=1.0,
+            vsync=False,
+            headless=False,
+            enable_backface_culling=True
+        )
+        renderer._camera_speed = 0.5
+        # orient the renderer to look at the centroid of the particles
+        renderer = fs5PlotUtils.look_at_centroid(x, renderer, renderer.camera_fov)
+        maxStress = 0.0
+        maxStrain = 0.0
+    else:
+        raise ValueError(f"Unknown render_backend: {args.render_backend}")
 
 # ========== Main Simulation Loop ==========
 startTime=time.time()
+nextRenderTime = args.render_interval  # Next simulation time to render/save
 for bigStep in range(0, sim.bigSteps):
     print(f"Starting big step {bigStep+1} of {sim.bigSteps}, meanys: {np.mean(mpm.ys.numpy()):.2f}")
 
@@ -301,8 +434,8 @@ for bigStep in range(0, sim.bigSteps):
         stepStartTime = time.time()
         sim.residual.zero_()  # reset residual at each step
         sim.numActiveParticles.zero_()  # reset active particle count at each step
-        if counter > 10000:
-            sim.gravity = wp.vec3(0.0, 0.0, 0.0)  # disable gravity after 10000 steps to allow settling
+        # if counter > 10000:
+        #     sim.gravity = wp.vec3(0.0, 0.0, 0.0)  # disable gravity after 10000 steps to allow settling
         # perform the mpm simulation step
         simulationRoutines.mpmSimulationStep(sim, mpm, xpbd, device)
 
@@ -311,6 +444,7 @@ for bigStep in range(0, sim.bigSteps):
 
             simulationRoutines.xpbdSimulationStep(sim, mpm, xpbd, device)
 
+        # utility kernels to compute residual and count active particles and other stuff
         wp.launch(
             kernel=simulationRoutines.velocityConvergence,
             dim=sim.nPoints,
@@ -335,15 +469,31 @@ for bigStep in range(0, sim.bigSteps):
         )
 
         residualCPU = sim.residual.numpy()[0]/sim.numActiveParticles.numpy()[0]
-        sim.t += sim.dt
         counter=counter+1
+        sim.t += sim.dt
+        
+        # Print status every 100 steps
         if np.mod(counter,100)==0:
             print(f'Step: {counter}, simulationTime: {sim.t:.4f}s, deltaTime: +{time.time()-stepStartTime:.4f}s, realTime: {time.time()-startTime:.4f}s, residual: {residualCPU:.4e}, mean accumulated plastic strain: {np.mean(mpm.particle_accumulated_strain.numpy()):.4f}, active particles: {sim.numActiveParticles.numpy()[0]}')
-            
-            if sim.render:
+        
+        # Check if we should render/save this timestep (use small tolerance for floating point comparison)
+        shouldRenderSave = sim.t >= (nextRenderTime - 0.5 * sim.dt)
+        
+        # Render based on simulation time interval
+        if sim.render and shouldRenderSave:
+            if args.render_backend == "usd":
+                from utils import usdRenderer
+                maxStress = usdRenderer.render_mpm_usd(renderer, sim, mpm, bigStep, counter, maxStress=maxStress)
+            else:  # opengl
                 maxStress = fs5PlotUtils.render_mpm(renderer, sim, mpm, bigStep, counter, maxStress=maxStress)
-            if sim.saveFlag:
-                fs5PlotUtils.save_mpm(sim, mpm, bigStep, counter)
+        
+        # Save based on simulation time interval (use same timing as render)
+        if sim.saveFlag and shouldRenderSave:
+            fs5PlotUtils.save_mpm(sim, mpm, bigStep, counter)
+        
+        # Update next render time after save/render
+        if shouldRenderSave:
+            nextRenderTime += args.render_interval
     # when convergence is reached, reduce the yield stress by 10% to mimic creep over a long time TODO: the creep should be a function of damage in some spatially varying way
 
     # wp.launch(
@@ -361,3 +511,8 @@ for bigStep in range(0, sim.bigSteps):
     #     ],
     #     device=device
     # )
+
+# ========== Finalize Renderer ==========
+if sim.render and args.render_backend == "usd":
+    renderer.finalize()
+    print(f"USD rendering complete. View with: usdview {renderer.usd_file}")

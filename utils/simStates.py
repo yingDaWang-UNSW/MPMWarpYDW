@@ -65,7 +65,11 @@ class MPMState:
         self.update_cov = args.update_cov
         self.constitutive_model = args.constitutive_model  # 0=Von Mises, 1=Drucker-Prager
         self.K0 = args.K0  # lateral earth pressure coefficient
-        self.boundFriction = args.boundFriction
+        
+        # Boundary conditions
+        self.boundaryCondition = args.boundaryCondition  # "friction", "restitution", or "absorbing"
+        self.boundFriction = args.boundFriction  # Friction coefficient for "friction" mode
+        self.boundRestitution = args.boundRestitution  # Coefficient of restitution for "restitution" mode
         self.boundaryPadding = None  # Number of grid cells from boundary where BCs apply (initialized later)
 
         # Material properties (per particle)
@@ -111,6 +115,7 @@ class XPBDState:
         # XPBD solver parameters
         self.xpbd_iterations = args.xpbd_iterations
         self.xpbd_relaxation = args.xpbd_relaxation
+        self.xpbd_mpm_coupling_strength = args.xpbd_mpm_coupling_strength
         self.dynamicParticleFriction = args.dynamicParticleFriction
         self.staticParticleFriction = args.staticParticleFriction
         self.staticVelocityThreshold = args.staticVelocityThreshold
@@ -138,6 +143,7 @@ class XPBDState:
         self.particle_x_deltaInt = wp.zeros(shape=nPoints, dtype=wp.vec3, device=device)
         self.particle_v_deltaInt = wp.zeros(shape=nPoints, dtype=wp.vec3, device=device)
         self.particle_delta = wp.zeros(shape=nPoints, dtype=wp.vec3, device=device)
+        self.particle_v_before_contact = wp.zeros(shape=nPoints, dtype=wp.vec3, device=device)  # For C/F update
         
         # Spatial hash grid for neighbor search
         self.particle_grid = wp.HashGrid(128, 128, 128, device=device)

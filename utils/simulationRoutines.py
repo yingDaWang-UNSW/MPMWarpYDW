@@ -44,7 +44,7 @@ def mpmSimulationStep(sim, mpm, xpbd, device,):
         device=device
     )
 
-    # 3. Particle-to-grid transfer (APIC + stress)
+    # 3. Particle-to-grid transfer (APIC + stress) - MPM particles only
     wp.launch(
         kernel=mpmRoutines.p2g_apic_with_stress,
         dim=sim.nPoints,
@@ -67,6 +67,28 @@ def mpmSimulationStep(sim, mpm, xpbd, device,):
         ],
         device=device
     )
+
+    # 3a. Transfer XPBD gravitational force to grid (mass coupling without pulling)
+    # This adds F=m*g as momentum impulse, WITHOUT adding XPBD mass to grid
+    # Result: MPM feels XPBD weight continuously, creating stress field for elastic propagation
+    # No ghost mass when XPBD moves away (grid_v_in cleared each frame)
+    # wp.launch(
+    #     kernel=mpmRoutines.apply_xpbd_gravity_force_to_grid,
+    #     dim=sim.nPoints,
+    #     inputs=[
+    #         sim.activeLabel,
+    #         sim.materialLabel,
+    #         sim.particle_x,
+    #         sim.particle_mass,
+    #         sim.gravity,
+    #         sim.dx,
+    #         sim.invdx,
+    #         sim.minBounds,
+    #         sim.dt,
+    #         mpm.grid_v_in,  # Add momentum to grid (before normalization)
+    #     ],
+    #     device=device
+    # )
 
     # 4. Grid normalization + gravity
     wp.launch(
@@ -98,32 +120,73 @@ def mpmSimulationStep(sim, mpm, xpbd, device,):
         )
 
     # 6. Apply boundary conditions on grid
-    wp.launch(
-        kernel=mpmRoutines.collideBounds,
-        dim=mpm.gridDims,
-        inputs=[
-            mpm.grid_v_out,
-            mpm.gridDims[0],
-            mpm.gridDims[1],
-            mpm.gridDims[2],
-            mpm.boundFriction,
-            mpm.boundaryPadding
-        ],
-        device=device
-    )
-
-    # wp.launch(
-    #     kernel=mpmRoutines.collideBoundsAbsorbing,
-    #     dim=mpm.gridDims,
-    #     inputs=[
-    #         mpm.grid_v_out,
-    #         mpm.gridDims[0],
-    #         mpm.gridDims[1],
-    #         mpm.gridDims[2],
-    #         mpm.boundaryPadding
-    #     ],
-    #     device=device
-    # )
+    # Choose boundary condition based on user setting
+    if mpm.boundaryCondition == "friction":
+        # Coulomb friction boundary (abrupt)
+        wp.launch(
+            kernel=mpmRoutines.collideBounds,
+            dim=mpm.gridDims,
+            inputs=[
+                mpm.grid_v_out,
+                mpm.gridDims[0],
+                mpm.gridDims[1],
+                mpm.gridDims[2],
+                mpm.boundFriction,  # Friction coefficient μ
+                sim.dt,  # Time step
+                wp.abs(sim.gravity[2]),  # Gravity magnitude
+                mpm.boundaryPadding
+            ],
+            device=device
+        )
+    elif mpm.boundaryCondition == "friction_gradual":
+        # Coulomb friction boundary with gradual transition (reduces artifacts)
+        wp.launch(
+            kernel=mpmRoutines.collideBoundsGradualFriction,
+            dim=mpm.gridDims,
+            inputs=[
+                mpm.grid_v_out,
+                mpm.gridDims[0],
+                mpm.gridDims[1],
+                mpm.gridDims[2],
+                mpm.boundFriction,  # Friction coefficient μ
+                sim.dt,  # Time step
+                wp.abs(sim.gravity[2]),  # Gravity magnitude
+                mpm.boundaryPadding
+            ],
+            device=device
+        )
+    elif mpm.boundaryCondition == "restitution":
+        # Restitution (elastic bounce) boundary with tangential friction
+        wp.launch(
+            kernel=mpmRoutines.collideBoundsRestitution,
+            dim=mpm.gridDims,
+            inputs=[
+                mpm.grid_v_out,
+                mpm.gridDims[0],
+                mpm.gridDims[1],
+                mpm.gridDims[2],
+                mpm.boundRestitution,  # Coefficient of restitution
+                mpm.boundFriction,  # Friction coefficient μ for tangential directions
+                sim.dt,  # Time step
+                wp.abs(sim.gravity[2]),  # Gravity magnitude
+                mpm.boundaryPadding
+            ],
+            device=device
+        )
+    elif mpm.boundaryCondition == "absorbing":
+        # Absorbing (damping) boundary
+        wp.launch(
+            kernel=mpmRoutines.collideBoundsAbsorbing,
+            dim=mpm.gridDims,
+            inputs=[
+                mpm.grid_v_out,
+                mpm.gridDims[0],
+                mpm.gridDims[1],
+                mpm.gridDims[2],
+                mpm.boundaryPadding
+            ],
+            device=device
+        )
 
     # 7. Grid-to-particle transfer (update x, v, C, F_trial)
     wp.launch(
@@ -266,6 +329,9 @@ def xpbdSimulationStep(sim, mpm, xpbd, device):
         ], 
         device=device
     )
+    # Store velocity before contact impulse for C/F update
+    wp.copy(xpbd.particle_v_before_contact, sim.particle_v)
+    
     wp.launch(
         kernel=xpbdRoutines.apply_mpm_contact_impulses,
         dim=sim.nPoints,
@@ -277,14 +343,38 @@ def xpbdSimulationStep(sim, mpm, xpbd, device):
             xpbd.particle_x_integrated,  # Converged XPBD positions
             xpbd.particle_v_integrated,  # Velocities from convergence
             sim.dtxpbd,
-            xpbd.particle_v_max
+            xpbd.particle_v_max,
+            xpbd.xpbd_mpm_coupling_strength,  # Coupling parameter
         ],
         outputs=[xpbd.particle_v_integrated],  # Update velocities only
         device=device,
     )
+    
     # Commit integrated positions/velocities
     sim.particle_x.assign(xpbd.particle_x_integrated)
     sim.particle_v.assign(xpbd.particle_v_integrated)
+    
+    # CRITICAL: Update C and F to match new velocity
+    # Without this, elasticity is broken (v inconsistent with F/C)
+    wp.launch(
+        kernel=mpmRoutines.update_C_and_F_from_velocity_change,
+        dim=sim.nPoints,
+        inputs=[
+            sim.activeLabel,
+            sim.materialLabel,
+            sim.particle_x,
+            xpbd.particle_v_before_contact,  # Velocity before impulse
+            sim.particle_v,  # Velocity after impulse
+            mpm.particle_C,
+            mpm.particle_F,
+            mpm.particle_F_trial,
+            sim.invdx,
+            sim.minBounds,
+            sim.dtxpbd,
+            mpm.grid_v_out,
+        ],
+        device=device,
+    )
 
     # Clip particle velocities to avoid over-explosion
     # wp.launch(

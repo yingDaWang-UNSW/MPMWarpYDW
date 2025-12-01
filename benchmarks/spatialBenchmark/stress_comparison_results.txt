@@ -1,0 +1,14 @@
+COUPLING TEST STRESS COMPARISON
+======================================================================
+
+SOLID (normal XPBD density):
+  Bottom stress: -355.40 +/- 1724.23 kPa
+
+LIGHT (10x lighter XPBD):
+  Bottom stress: -222.47 +/- 904.63 kPa
+
+DIFFERENCE:
+  Delta: 132.93 kPa
+  Relative: -37.4%
+
+CONCLUSION: Reduced by 37.4% - expected behavior

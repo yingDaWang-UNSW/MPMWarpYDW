@@ -6,13 +6,14 @@
   "residualThreshold": 0.00000005,
   
   "rpic_damping": 0.2,
-  "grid_v_damping_scale": 1.1,
+  "grid_v_damping_scale": 0.9,
   "update_cov": 1,
   
   "render": 1,
+  "render_backend": "opengl",
   "saveFlag": 1,
-  "outputFolder": "./benchmarks/generalBenchmark/output/",
-  "domainFile": "./benchmarks/generalBenchmark/annular_arch_particles.h5",
+  "outputFolder": "./benchmarks/generalBenchmark/outputElastic/",
+  "domainFile": "./benchmarks/generalBenchmark/block_particles.h5",
   "grid_padding": 10.0,
   "grid_particle_spacing_scale": 2.0,
   
@@ -26,8 +27,8 @@
   "alpha": 0.3,
   "hardening": 0.0,
   "softening": 0.0,
-  "eta_shear": 1e6,
-  "eta_bulk": 1e6,
+  "eta_shear": 1e8,
+  "eta_bulk": 1e8,
   
   "gravity": -9.81,
   "K0": 0.5,

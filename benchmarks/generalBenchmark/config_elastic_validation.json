@@ -1,0 +1,57 @@
+{
+  "dt": 1e-4,
+  "dtxpbd": 0.01,
+  "nSteps": 10000,
+  "bigSteps": 1,
+  "residualThreshold": 1e-8,
+  
+  "rpic_damping": 0.2,
+  "grid_v_damping_scale": 1,
+  "update_cov": 1,
+  
+  "render": 0,
+  "render_backend": "opengl",
+  "saveFlag": 1,
+  "outputFolder": "./benchmarks/generalBenchmark/outputElastic/",
+  "domainFile": "./benchmarks/generalBenchmark/block_particles.h5",
+  "grid_padding": 10.0,
+  "grid_particle_spacing_scale": 2.0,
+  "boundary_padding_mask": "111101",
+  
+  "density": 5000.0,
+  "E": 1e9,
+  "nu": 0.2,
+
+  "constitutive_model": 1,
+
+  "ys": 1e20,
+  "alpha": 0.0,
+  "hardening": 0.0,
+  "softening": 0.0,
+  "eta_shear": 1e7,
+  "eta_bulk": 1e7,
+
+  "gravity": -9.81,
+  "K0": 0.5,
+  
+  "boundaryCondition": "restitution",
+  "boundFriction": 100,
+  "boundRestitution": 0,
+  "eff": 0.0,
+  "strainCriteria": 1e10,
+  
+  "xpbd_relaxation": 0.0,
+  "dynamicParticleFriction": 0.0,
+  "staticVelocityThreshold": 1e-5,
+  "staticParticleFriction": 0.0,
+  "xpbd_iterations": 0,
+  "particle_cohesion": 0.0,
+  "sleepThreshold": 0.5,
+  
+  "swellingRatio": 0.0,
+  "swellingActivationFactor": 0.0,
+  "swellingMaxFactor": 1.0,
+  
+  "particle_v_max": 100.0,
+  "color_mode": "stress"
+}

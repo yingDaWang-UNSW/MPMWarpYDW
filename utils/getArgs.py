@@ -33,6 +33,9 @@ def get_args():
 
     # Rendering & saving
     parser.add_argument("--render", type=int, default=0, help="Enable rendering")
+    parser.add_argument("--render_backend", type=str, default="opengl", choices=["opengl", "usd"], 
+                        help="Rendering backend: 'opengl' for interactive viewer, 'usd' for GPU-direct USD export")
+    parser.add_argument("--render_interval", type=float, default=0.1, help="Simulation time interval (seconds) between renders")
     parser.add_argument("--color_mode", type=str, default="effective_ys", help="Color mode for rendering")
     parser.add_argument("--saveFlag", type=int, default=0, help="Enable saving simulation results")
     parser.add_argument("--outputFolder", type=str, default="./output/", help="Output folder for simulation results")
@@ -42,6 +45,8 @@ def get_args():
                         help="Input HDF5 domain file. Can contain spatial property arrays (density, E, nu, ys, alpha, hardening, softening, eta_shear, eta_bulk, strainCriteria)")
     parser.add_argument("--grid_padding", type=float, default=25.0, help="Padding around min/max bounds (m)")
     parser.add_argument("--grid_particle_spacing_scale", type=float, default=4.0, help="Multiplier for particle diameter to set grid spacing")
+    parser.add_argument("--boundary_padding_mask", type=str, default="111101", 
+                        help="6-digit binary mask for boundary padding: -X,+X,-Y,+Y,-Z,+Z. 1=loose (grid_padding), 0=tight (mpmPadding). Default '111101'")
 
     # Material properties (used as defaults if not in HDF5)
     parser.add_argument("--density", type=float, default=3000.0, help="Density of material (kg/m³) - default if not in HDF5")
@@ -67,14 +72,20 @@ def get_args():
     parser.add_argument("--gravity", type=float, default=-9.81, help="Gravity (m/s²)")
     parser.add_argument("--K0", type=float, default=0.5, help="Lateral earth pressure coefficient for initial stress")
     parser.add_argument("--z_top", type=float, default=None, help="Reference height for geostatic stress (m). If None, uses max particle z-coordinate")
+    parser.add_argument("--initialise_geostatic", type=int, default=1, help="initialise geo or let settle")
 
     # Boundary & friction
-    parser.add_argument("--boundFriction", type=float, default=0.2, help="Bounding box friction")
+    parser.add_argument("--boundFriction", type=float, default=0.2, help="Bounding box friction coefficient")
+    parser.add_argument("--boundaryCondition", type=str, default="friction", choices=["friction", "friction_gradual", "restitution", "absorbing"],
+                        help="Boundary condition type: 'friction' (Coulomb, abrupt), 'friction_gradual' (Coulomb with smooth transition), 'restitution' (elastic bounce), 'absorbing' (damping)")
+    parser.add_argument("--boundRestitution", type=float, default=0.5, help="Coefficient of restitution for boundary collisions (0=inelastic, 1=elastic)")
     parser.add_argument("--eff", type=float, default=0.05, help="Phase change efficiency")
     parser.add_argument("--strainCriteria", type=float, default=0.05, help="Critical accumulated strain for phase change - default if not in HDF5")
 
     # XPBD parameters
     parser.add_argument("--xpbd_relaxation", type=float, default=1.0, help="XPBD relaxation factor")
+    parser.add_argument("--xpbd_mpm_coupling_strength", type=float, default=0.25, 
+                        help="MPM-XPBD coupling strength: scales XPBD displacement to MPM velocity impulse (empirically tuned, typically 0.2-0.3)")
     parser.add_argument("--dynamicParticleFriction", type=float, default=0.05, help="Dynamic friction for XPBD")
     parser.add_argument("--staticVelocityThreshold", type=float, default=1e-5, help="Static velocity threshold")
     parser.add_argument("--staticParticleFriction", type=float, default=0.1, help="Static friction for XPBD")
