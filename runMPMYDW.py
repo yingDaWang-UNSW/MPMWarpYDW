@@ -80,8 +80,101 @@ for prop_name in spatial_property_names:
 if any(spatial_properties_available.values()):
     print(f"Loading {sum(spatial_properties_available.values())} spatial property arrays from HDF5")
 
+# ========== Early CFL Analysis (for auto dt estimation) ==========
+# Load material properties needed for CFL calculation
+if spatial_properties_available.get('density', False):
+    density_for_cfl = np.array(h5file["density"], dtype=np.float32)
+else:
+    density_for_cfl = np.full(nPoints, args.density, dtype=np.float32)
+
+if spatial_properties_available.get('E', False):
+    E_for_cfl = np.array(h5file["E"], dtype=np.float32)
+else:
+    E_for_cfl = np.full(nPoints, args.E, dtype=np.float32)
+
+if spatial_properties_available.get('nu', False):
+    nu_for_cfl = np.array(h5file["nu"], dtype=np.float32)
+else:
+    nu_for_cfl = np.full(nPoints, args.nu, dtype=np.float32)
+
+# Compute wave speed for CFL
+E_mean = np.mean(E_for_cfl)
+nu_mean = np.mean(nu_for_cfl)
+density_mean = np.mean(density_for_cfl)
+K_mean = E_mean / (3 * (1 - 2*nu_mean))
+G_mean = E_mean / (2 * (1 + nu_mean))
+c_p = np.sqrt((K_mean + 4*G_mean/3) / density_mean)
+cfl_limit = dx / c_p
+
+# Auto-estimate dt from CFL if dt=0
+if args.dt <= 0:
+    # CFL safety factor depends nonlinearly on E and nu:
+    # - High nu (→0.5): Near-incompressible, needs much smaller safety factor
+    # - Low E: Softer materials can have numerical issues, need smaller factor
+    # - High E + moderate nu: More stable, can use larger factor
+    #
+    # Empirical formula based on testing:
+    # Base factor ~0.1 for typical rock (E~1e9, nu~0.3)
+    # Reduce significantly for near-incompressible (nu > 0.45)
+    # Reduce for very soft materials (E < 1e7)
+    
+    # Base safety factor
+    cfl_safety_factor = 0.1
+    
+    # Penalty for near-incompressibility (nu approaching 0.5)
+    # As nu → 0.5, bulk modulus → infinity, causing instability
+    if nu_mean > 0.45:
+        # Exponential penalty for high Poisson ratio
+        nu_penalty = np.exp(-10 * (nu_mean - 0.45))  # ~0.6 at nu=0.45, ~0.1 at nu=0.49
+        cfl_safety_factor *= nu_penalty
+    
+    # Penalty for very soft materials (numerical precision issues)
+    E_ref = 1e9  # Reference stiffness (typical rock)
+    if E_mean < E_ref:
+        # Log-scale penalty: factor of 10 reduction in E → factor of ~2 reduction in safety
+        E_ratio = E_mean / E_ref
+        E_penalty = np.clip(E_ratio ** 0.3, 0.1, 1.0)  # E=1e6 → penalty ~0.5, E=1e5 → ~0.25
+        cfl_safety_factor *= E_penalty
+    
+    # Combined effect: very soft + near-incompressible is worst case
+    # Ensure minimum safety factor
+    cfl_safety_factor = np.clip(cfl_safety_factor, 0.005, 0.2)
+    
+    args.dt = cfl_safety_factor * cfl_limit
+    print(f"\n*** AUTO-ESTIMATED dt from CFL ***")
+    print(f"  Material: E={E_mean:.2e} Pa, ν={nu_mean:.3f}")
+    print(f"  CFL limit: {cfl_limit:.2e} s")
+    print(f"  Adaptive safety factor: {cfl_safety_factor:.3f}")
+    if nu_mean > 0.45:
+        print(f"    (reduced for near-incompressibility: ν={nu_mean:.3f} > 0.45)")
+    if E_mean < E_ref:
+        print(f"    (reduced for soft material: E={E_mean:.2e} < {E_ref:.0e})")
+    print(f"  Estimated dt: {args.dt:.2e} s")
+
+# Ensure mpmStepsPerXpbdStep is an integer
+# If dtxpbd/dt is not an integer, adjust dt to make it so
+raw_ratio = args.dtxpbd / args.dt
+mpmStepsPerXpbdStep = int(np.round(raw_ratio))
+if mpmStepsPerXpbdStep < 1:
+    mpmStepsPerXpbdStep = 1
+    
+# Adjust dt to ensure exact integer ratio
+adjusted_dt = args.dtxpbd / mpmStepsPerXpbdStep
+if abs(adjusted_dt - args.dt) / args.dt > 0.01:  # More than 1% change
+    print(f"\n*** ADJUSTED dt for integer XPBD ratio ***")
+    print(f"  Original dt: {args.dt:.2e} s")
+    print(f"  Adjusted dt: {adjusted_dt:.2e} s")
+    print(f"  dtxpbd: {args.dtxpbd:.2e} s")
+    print(f"  mpmStepsPerXpbdStep: {mpmStepsPerXpbdStep}")
+args.dt = adjusted_dt
+
+print(f"\nTime stepping configuration:")
+print(f"  dt (MPM):     {args.dt:.2e} s")
+print(f"  dtxpbd:       {args.dtxpbd:.2e} s")
+print(f"  MPM steps per XPBD step: {mpmStepsPerXpbdStep}")
+
 # ========== Initialize State Classes ==========
-print(f"Running simulation with dt={args.dt}, dtxpbd={args.dtxpbd}, nSteps={args.nSteps}, bigSteps={args.bigSteps}, residualThreshold={args.residualThreshold}")
+print(f"\nRunning simulation with dt={args.dt}, dtxpbd={args.dtxpbd}, nSteps={args.nSteps}, bigSteps={args.bigSteps}, residualThreshold={args.residualThreshold}")
 
 # Create state containers
 sim = SimState(args, nPoints, device=device)

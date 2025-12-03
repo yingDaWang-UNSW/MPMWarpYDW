@@ -1,4 +1,8 @@
 {
+  "_comment": "MPM-XPBD Coupling Test",
+  "_comment2": "Rigid slab (MPM) + Weak block (converts to XPBD)",
+  "_comment3": "Tests if XPBD particles properly load MPM slab",
+  
   "dt": 0.0005,
   "dtxpbd": 0.01,
   "nSteps": 10000,
@@ -10,21 +14,40 @@
   "update_cov": 1,
   
   "render": 1,
+  "render_backend": "opengl",
+  "render_interval": 0.1,
   "saveFlag": 1,
   "outputFolder": "./benchmarks/spatialBenchmark/output_coupling_test_solid/",
   "domainFile": "./benchmarks/spatialBenchmark/coupling_test_domain_solid.h5",
   "grid_padding": 15,
   "grid_particle_spacing_scale": 2.0,
+  "boundary_padding_mask": "111101",
   
+  "density": 2500.0,
+  "E": 1e9,
+  "nu": 0.25,
   "constitutive_model": 1,
+  "ys": 1e6,
+  "alpha": 0.3,
+  "hardening": 0.0,
+  "softening": 0.0,
+  "eta_shear": 1e6,
+  "eta_bulk": 1e6,
+  "volumetric_locking_correction": 1,
   
   "gravity": -9.81,
   "K0": 0.0,
+  "z_top": null,
+  "initialise_geostatic": 1,
   
+  "boundaryCondition": "friction",
   "boundFriction": 0,
+  "boundRestitution": 0.5,
   "eff": 0.0,
+  "strainCriteria": 0.01,
   
   "xpbd_relaxation": 1.0,
+  "xpbd_mpm_coupling_strength": 0.25,
   "dynamicParticleFriction": 0.05,
   "staticVelocityThreshold": 1e-5,
   "staticParticleFriction": 0.1,
@@ -37,9 +60,5 @@
   "swellingMaxFactor": 1.0,
   
   "particle_v_max": 50.0,
-  "color_mode": "state",
-  
-  "_comment": "MPM-XPBD Coupling Test",
-  "_comment2": "Rigid slab (MPM) + Weak block (converts to XPBD)",
-  "_comment3": "Tests if XPBD particles properly load MPM slab"
+  "color_mode": "state"
 }

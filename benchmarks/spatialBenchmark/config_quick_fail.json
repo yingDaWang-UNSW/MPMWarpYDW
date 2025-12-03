@@ -1,4 +1,7 @@
 {
+  "_comment": "Quick test with weak material that fails easily",
+  "_comment2": "Material properties loaded from arch_weak_properties.h5",
+  
   "dt": 0.0001,
   "dtxpbd": 0.01,
   "nSteps": 50000000,
@@ -10,21 +13,40 @@
   "update_cov": 1,
   
   "render": 0,
+  "render_backend": "opengl",
+  "render_interval": 0.1,
   "saveFlag": 1,
   "outputFolder": "./benchmarks/spatialBenchmark/output/",
   "domainFile": "./benchmarks/spatialBenchmark/arch_weak_properties.h5",
   "grid_padding": 10.0,
   "grid_particle_spacing_scale": 2.0,
+  "boundary_padding_mask": "111101",
   
+  "density": 2500.0,
+  "E": 1e9,
+  "nu": 0.25,
   "constitutive_model": 1,
+  "ys": 1e6,
+  "alpha": 0.3,
+  "hardening": 0.0,
+  "softening": 0.0,
+  "eta_shear": 1e6,
+  "eta_bulk": 1e6,
+  "volumetric_locking_correction": 1,
   
   "gravity": -9.81,
   "K0": 0.5,
+  "z_top": null,
+  "initialise_geostatic": 1,
   
+  "boundaryCondition": "friction",
   "boundFriction": 0.2,
+  "boundRestitution": 0.5,
   "eff": 0.1,
+  "strainCriteria": 0.01,
   
   "xpbd_relaxation": 1.0,
+  "xpbd_mpm_coupling_strength": 0.25,
   "dynamicParticleFriction": 0.05,
   "staticVelocityThreshold": 1e-5,
   "staticParticleFriction": 0.1,
@@ -37,8 +59,5 @@
   "swellingMaxFactor": 2.0,
   
   "particle_v_max": 100.0,
-  "color_mode": "damage",
-  
-  "_comment": "Quick test with weak material that fails easily",
-  "_comment2": "Material properties loaded from arch_weak_properties.h5"
+  "color_mode": "damage"
 }

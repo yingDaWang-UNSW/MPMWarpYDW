@@ -853,6 +853,116 @@ def update_cov(particle_cov: wp.array(dtype=float),
     particle_cov[p * 6 + 4] = cov_np1[1, 2]
     particle_cov[p * 6 + 5] = cov_np1[2, 2]
 
+
+# ============================================================================
+# VOLUMETRIC LOCKING CORRECTION (Itasca MPAC method)
+# ============================================================================
+# Near-incompressible materials (high Poisson ratio) suffer from volumetric 
+# locking where the velocity gradient is over-constrained by integration points.
+# The correction averages the volumetric (dilational) part of velocity gradient 
+# over each cell, reducing artificial stiffening.
+#
+# Reference: Itasca MPAC documentation - Volumetric Locking section
+# Equations (47)-(53) in the MPAC Theory manual
+# ============================================================================
+
+@wp.kernel
+def accumulate_cell_divergence(
+    activeLabel: wp.array(dtype=wp.int32),
+    materialLabel: wp.array(dtype=wp.int32),
+    particle_x: wp.array(dtype=wp.vec3),
+    particle_C: wp.array(dtype=wp.mat33),
+    particle_vol: wp.array(dtype=float),
+    inv_dx: float,
+    minBounds: wp.vec3,
+    cell_div_v_weighted: wp.array(dtype=float, ndim=3),
+    cell_vol_sum: wp.array(dtype=float, ndim=3),
+):
+    """
+    Phase 1 of volumetric locking correction: Accumulate velocity divergence to cells.
+    
+    For each MPM particle:
+    - Compute velocity divergence: ∇·v = tr(∇v) = tr(particle_C)
+    - Accumulate to cell: Σ(∇·v_p * V_p) and Σ(V_p)
+    
+    Cell is determined by particle position (integer cell index).
+    """
+    p = wp.tid()
+    if activeLabel[p] == 1 and materialLabel[p] == 1:  # Only active MPM particles
+        # Get cell index from particle position
+        grid_pos = (particle_x[p] - minBounds) * inv_dx
+        cell_x = wp.int(grid_pos[0])
+        cell_y = wp.int(grid_pos[1])
+        cell_z = wp.int(grid_pos[2])
+        
+        # Compute velocity divergence from particle_C (velocity gradient)
+        # ∇·v = ∂vx/∂x + ∂vy/∂y + ∂vz/∂z = tr(∇v)
+        grad_v = particle_C[p]
+        div_v = grad_v[0, 0] + grad_v[1, 1] + grad_v[2, 2]
+        
+        # Volume of this particle
+        V_p = particle_vol[p]
+        
+        # Atomic add to cell arrays
+        wp.atomic_add(cell_div_v_weighted, cell_x, cell_y, cell_z, div_v * V_p)
+        wp.atomic_add(cell_vol_sum, cell_x, cell_y, cell_z, V_p)
+
+
+@wp.kernel
+def apply_volumetric_locking_correction(
+    activeLabel: wp.array(dtype=wp.int32),
+    materialLabel: wp.array(dtype=wp.int32),
+    particle_x: wp.array(dtype=wp.vec3),
+    particle_C: wp.array(dtype=wp.mat33),
+    inv_dx: float,
+    minBounds: wp.vec3,
+    cell_div_v_weighted: wp.array(dtype=float, ndim=3),
+    cell_vol_sum: wp.array(dtype=float, ndim=3),
+):
+    """
+    Phase 2 of volumetric locking correction: Apply corrected velocity gradient.
+    
+    The improved velocity gradient is:
+        ∇v_corrected = ∇v + (1/d) * ((∇·v)_cell - ∇·v_p) * I
+    
+    where d=3 (3D), (∇·v)_cell is the cell-averaged divergence, and I is identity.
+    This replaces the particle's dilational component with the cell average while
+    preserving the deviatoric (shear) component.
+    """
+    p = wp.tid()
+    if activeLabel[p] == 1 and materialLabel[p] == 1:  # Only active MPM particles
+        # Get cell index
+        grid_pos = (particle_x[p] - minBounds) * inv_dx
+        cell_x = wp.int(grid_pos[0])
+        cell_y = wp.int(grid_pos[1])
+        cell_z = wp.int(grid_pos[2])
+        
+        # Get cell-averaged divergence
+        vol_sum = cell_vol_sum[cell_x, cell_y, cell_z]
+        if vol_sum > 1e-20:
+            div_v_cell = cell_div_v_weighted[cell_x, cell_y, cell_z] / vol_sum
+        else:
+            div_v_cell = 0.0
+        
+        # Current particle velocity gradient and its divergence
+        grad_v = particle_C[p]
+        div_v_p = grad_v[0, 0] + grad_v[1, 1] + grad_v[2, 2]
+        
+        # Correction factor: (1/d) * (div_v_cell - div_v_p)
+        # d = 3 for 3D
+        correction = (div_v_cell - div_v_p) / 3.0
+        
+        # Apply correction to diagonal (volumetric) components only
+        # ∇v_corrected = ∇v + correction * I
+        identity_correction = wp.mat33(
+            correction, 0.0, 0.0,
+            0.0, correction, 0.0,
+            0.0, 0.0, correction
+        )
+        
+        particle_C[p] = grad_v + identity_correction
+
+
 # the domain is bounded by a box
 @wp.func
 def apply_coulomb_friction(v: float, mu: float, dt: float, g: float) -> float:

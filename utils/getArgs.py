@@ -20,8 +20,8 @@ def get_args():
     parser = argparse.ArgumentParser(description="MPM-XPBD Simulation Parameters", parents=[pre_parser])
 
     # Simulation steps & time
-    parser.add_argument("--dt", type=float, default=1e-3, help="Time step for MPM (s)")
-    parser.add_argument("--dtxpbd", type=float, default=1e-2, help="Time step for XPBD (s)")
+    parser.add_argument("--dt", type=float, default=1e-3, help="Time step for MPM (s). Set to 0 to auto-estimate from CFL condition (safety factor 0.3)")
+    parser.add_argument("--dtxpbd", type=float, default=1e-2, help="Time step for XPBD (s). dt will be adjusted to ensure dtxpbd/dt is an integer.")
     parser.add_argument("--nSteps", type=int, default=2500000, help="Number of simulation steps")
     parser.add_argument("--bigSteps", type=int, default=100, help="Number of big steps (outer loop iterations)")
     parser.add_argument("--residualThreshold", type=float, default=5e-1, help="Residual threshold for convergence")
@@ -67,6 +67,10 @@ def get_args():
     parser.add_argument("--softening", type=float, default=0, help="Softening modulus - default if not in HDF5")
     parser.add_argument("--eta_shear", type=float, default=1e7, help="Shear viscosity - default if not in HDF5")
     parser.add_argument("--eta_bulk", type=float, default=1e7, help="Bulk viscosity - default if not in HDF5")
+    
+    # Volumetric locking correction
+    parser.add_argument("--volumetric_locking_correction", type=int, default=1, 
+                        help="Enable cell-averaged volumetric locking correction (1=on, 0=off). Prevents artificial stiffening for near-incompressible materials.")
 
     # Gravity
     parser.add_argument("--gravity", type=float, default=-9.81, help="Gravity (m/s²)")

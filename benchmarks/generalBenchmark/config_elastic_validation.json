@@ -1,4 +1,6 @@
 {
+  "_comment": "Elastic validation test - very high yield stress to stay in elastic regime",
+  
   "dt": 1e-4,
   "dtxpbd": 0.01,
   "nSteps": 10000,
@@ -11,6 +13,7 @@
   
   "render": 0,
   "render_backend": "opengl",
+  "render_interval": 0.1,
   "saveFlag": 1,
   "outputFolder": "./benchmarks/generalBenchmark/outputElastic/",
   "domainFile": "./benchmarks/generalBenchmark/block_particles.h5",
@@ -30,9 +33,12 @@
   "softening": 0.0,
   "eta_shear": 1e7,
   "eta_bulk": 1e7,
+  "volumetric_locking_correction": 1,
 
   "gravity": -9.81,
   "K0": 0.5,
+  "z_top": null,
+  "initialise_geostatic": 1,
   
   "boundaryCondition": "restitution",
   "boundFriction": 100,
@@ -41,6 +47,7 @@
   "strainCriteria": 1e10,
   
   "xpbd_relaxation": 0.0,
+  "xpbd_mpm_coupling_strength": 0.25,
   "dynamicParticleFriction": 0.0,
   "staticVelocityThreshold": 1e-5,
   "staticParticleFriction": 0.0,

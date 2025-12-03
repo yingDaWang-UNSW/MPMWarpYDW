@@ -100,6 +100,11 @@ class MPMState:
         self.grid_v_in = wp.zeros(shape=gridDims, dtype=wp.vec3, device=device)
         self.grid_v_out = wp.zeros(shape=gridDims, dtype=wp.vec3, device=device)
         self.gridBCIndex = wp.zeros(shape=gridDims, dtype=wp.int32, device=device)
+        
+        # Volumetric locking correction arrays (cell-averaged divergence)
+        self.volumetric_locking_correction = args.volumetric_locking_correction
+        self.cell_div_v_weighted = wp.zeros(shape=gridDims, dtype=float, device=device)  # Σ(∇·v_p * V_p)
+        self.cell_vol_sum = wp.zeros(shape=gridDims, dtype=float, device=device)  # Σ(V_p)
 
         # Initial position tracking (for phase transition)
         self.particle_x_initial = wp.zeros(shape=nPoints, dtype=wp.vec3, device=device)

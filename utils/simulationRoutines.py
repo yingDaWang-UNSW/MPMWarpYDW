@@ -209,6 +209,49 @@ def mpmSimulationStep(sim, mpm, xpbd, device,):
         ],
         device=device
     )
+    
+    # 8. Volumetric locking correction (Itasca MPAC method)
+    # Prevents artificial stiffening for near-incompressible materials
+    # by averaging the volumetric component of velocity gradient over cells
+    if mpm.volumetric_locking_correction:
+        # Zero cell arrays
+        mpm.cell_div_v_weighted.zero_()
+        mpm.cell_vol_sum.zero_()
+        
+        # Phase 1: Accumulate velocity divergence to cells
+        wp.launch(
+            kernel=mpmRoutines.accumulate_cell_divergence,
+            dim=sim.nPoints,
+            inputs=[
+                sim.activeLabel,
+                sim.materialLabel,
+                sim.particle_x,
+                mpm.particle_C,
+                sim.particle_vol,
+                sim.invdx,
+                sim.minBounds,
+                mpm.cell_div_v_weighted,
+                mpm.cell_vol_sum,
+            ],
+            device=device
+        )
+        
+        # Phase 2: Apply corrected velocity gradient to particles
+        wp.launch(
+            kernel=mpmRoutines.apply_volumetric_locking_correction,
+            dim=sim.nPoints,
+            inputs=[
+                sim.activeLabel,
+                sim.materialLabel,
+                sim.particle_x,
+                mpm.particle_C,
+                sim.invdx,
+                sim.minBounds,
+                mpm.cell_div_v_weighted,
+                mpm.cell_vol_sum,
+            ],
+            device=device
+        )
 
 def xpbdSimulationStep(sim, mpm, xpbd, device):
     """
@@ -356,25 +399,25 @@ def xpbdSimulationStep(sim, mpm, xpbd, device):
     
     # CRITICAL: Update C and F to match new velocity
     # Without this, elasticity is broken (v inconsistent with F/C)
-    wp.launch(
-        kernel=mpmRoutines.update_C_and_F_from_velocity_change,
-        dim=sim.nPoints,
-        inputs=[
-            sim.activeLabel,
-            sim.materialLabel,
-            sim.particle_x,
-            xpbd.particle_v_before_contact,  # Velocity before impulse
-            sim.particle_v,  # Velocity after impulse
-            mpm.particle_C,
-            mpm.particle_F,
-            mpm.particle_F_trial,
-            sim.invdx,
-            sim.minBounds,
-            sim.dtxpbd,
-            mpm.grid_v_out,
-        ],
-        device=device,
-    )
+    # wp.launch(
+    #     kernel=mpmRoutines.update_C_and_F_from_velocity_change,
+    #     dim=sim.nPoints,
+    #     inputs=[
+    #         sim.activeLabel,
+    #         sim.materialLabel,
+    #         sim.particle_x,
+    #         xpbd.particle_v_before_contact,  # Velocity before impulse
+    #         sim.particle_v,  # Velocity after impulse
+    #         mpm.particle_C,
+    #         mpm.particle_F,
+    #         mpm.particle_F_trial,
+    #         sim.invdx,
+    #         sim.minBounds,
+    #         sim.dtxpbd,
+    #         mpm.grid_v_out,
+    #     ],
+    #     device=device,
+    # )
 
     # Clip particle velocities to avoid over-explosion
     # wp.launch(

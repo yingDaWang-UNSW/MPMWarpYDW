@@ -1,4 +1,6 @@
 {
+  "_comment": "Quick test configuration for development/debugging",
+  
   "dt": 0.0001,
   "dtxpbd": 0.01,
   "nSteps": 50000000,
@@ -11,11 +13,13 @@
   
   "render": 1,
   "render_backend": "opengl",
+  "render_interval": 0.1,
   "saveFlag": 1,
   "outputFolder": "./benchmarks/generalBenchmark/outputElastic/",
   "domainFile": "./benchmarks/generalBenchmark/block_particles.h5",
   "grid_padding": 10.0,
   "grid_particle_spacing_scale": 2.0,
+  "boundary_padding_mask": "111101",
   
   "density": 5000.0,
   "E": 1e9,
@@ -29,15 +33,21 @@
   "softening": 0.0,
   "eta_shear": 1e8,
   "eta_bulk": 1e8,
+  "volumetric_locking_correction": 1,
   
   "gravity": -9.81,
   "K0": 0.5,
+  "z_top": null,
+  "initialise_geostatic": 1,
   
+  "boundaryCondition": "friction",
   "boundFriction": 0.0,
+  "boundRestitution": 0.5,
   "eff": 0.0,
   "strainCriteria": 0.05,
   
   "xpbd_relaxation": 1.0,
+  "xpbd_mpm_coupling_strength": 0.25,
   "dynamicParticleFriction": 0.05,
   "staticVelocityThreshold": 1e-5,
   "staticParticleFriction": 0.1,
@@ -51,4 +61,4 @@
   
   "particle_v_max": 100.0,
   "color_mode": "damage"
-  }
+}
