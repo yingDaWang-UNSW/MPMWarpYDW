@@ -12,13 +12,13 @@ def creep_by_damage_with_baseline(
     damage_exponent: float                 # beta: exponent on damage
 ):
     p = wp.tid()
-    if materialLabel[p] != 1:
+    if materialLabel[p] > 1:
         return
 
     D = damage[p]
     creep_rate = base_creep + damage_creep * wp.pow(D, damage_exponent)
     decay = creep_rate * ys_base[p] * dt
-    ys[p] = wp.max(ys_base[p] * 0.2, ys[p] - decay)  # floor at 20% of original
+    ys[p] = wp.max(0.0, ys[p] - decay)  # floor at 0
 
 @wp.kernel
 def initialize_geostatic_stress(
@@ -176,50 +176,29 @@ def compute_stress_from_F_trial(
 ):
     p = wp.tid()
     # apply return mapping on mpm active particles
-    if materialLabel[p] == 1:
+    if materialLabel[p] <= 1:
         if activeLabel[p] == 1:
-            # Choose constitutive model: 0=Von Mises, 1=Drucker-Prager
-            if constitutive_model == 0:
-                particle_F[p] = von_mises_return_mapping_with_damage_YDW(
-                    particle_F_trial[p], 
-                    particlePosition,
-                    particleVelocity,
-                    initialPhaseChangePosition,
-                    initialPhaseChangeVelocity,
-                    materialLabel,
-                    particle_accumulated_strain,
-                    particle_damage,
-                    mu,
-                    lam,
-                    yield_stress,
-                    hardening,
-                    softening, 
-                    particle_density,
-                    strainCriteria,
-                    efficiency,
-                    p
-                )
-            else:  # Drucker-Prager
-                particle_F[p] = drucker_prager_return_mapping(
-                    particle_F_trial[p], 
-                    particlePosition,
-                    particleVelocity,
-                    initialPhaseChangePosition,
-                    initialPhaseChangeVelocity,
-                    materialLabel,
-                    particle_accumulated_strain,
-                    particle_damage,
-                    mu,
-                    lam,
-                    yield_stress,
-                    alpha,
-                    hardening,
-                    softening, 
-                    particle_density,
-                    strainCriteria,
-                    efficiency,
-                    p
-                )
+
+            particle_F[p] = drucker_prager_return_mapping(
+                particle_F_trial[p], 
+                particlePosition,
+                particleVelocity,
+                initialPhaseChangePosition,
+                initialPhaseChangeVelocity,
+                materialLabel,
+                particle_accumulated_strain,
+                particle_damage,
+                mu,
+                lam,
+                yield_stress,
+                alpha,
+                hardening,
+                softening, 
+                particle_density,
+                strainCriteria,
+                efficiency,
+                p
+            )
 
             # compute stress here
             J = wp.determinant(particle_F[p])
@@ -252,116 +231,6 @@ def compute_stress_from_F_trial(
             stress = stress + viscous_stress
 
             particle_stress[p] = stress
-
-
-@wp.func
-def von_mises_return_mapping_with_damage_YDW(
-    F_trial: wp.mat33, 
-    particlePosition: wp.array(dtype=wp.vec3),
-    particleVelocity: wp.array(dtype=wp.vec3),
-    initialPhaseChangePosition: wp.array(dtype=wp.vec3),
-    initialPhaseChangeVelocity: wp.array(dtype=wp.vec3),
-    materialLabel: wp.array(dtype=wp.int32),
-    particle_accumulated_strain: wp.array(dtype=float),
-    damage: wp.array(dtype=float),
-    mu:  wp.array(dtype=float),
-    lam:  wp.array(dtype=float),
-    yield_stress: wp.array(dtype=float),
-    hardening:  wp.array(dtype=float),
-    softening: wp.array(dtype=float),
-    density: wp.array(dtype=float),
-    strainCriteria: wp.array(dtype=float),
-    efficiency: float,
-    p: int
-):
-    U = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-    V = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-    sig_old = wp.vec3(0.0) 
-    wp.svd3(F_trial, U, sig_old, V) 
-
-    sig = wp.vec3(wp.max(sig_old[0], 0.01), wp.max(sig_old[1], 0.01), wp.max(sig_old[2], 0.01))  # add this to prevent NaN in extrem cases
-    epsilon = wp.vec3(wp.log(sig[0]), wp.log(sig[1]), wp.log(sig[2]))
-    mean_eps = (epsilon[0] + epsilon[1] + epsilon[2]) / 3.0
-    epsilon_dev = epsilon - wp.vec3(mean_eps)
-
-    # Trial deviatoric stress (effective)
-    tau = 2.0 * mu[p] * epsilon + lam[p] * (epsilon[0] + epsilon[1] + epsilon[2]) * wp.vec3(1.0)
-    p_stress = (tau[0] + tau[1] + tau[2]) / 3.0
-    tau_dev = tau - p_stress * wp.vec3(1.0)
-
-    # Modified yield stress due to damage
-    D = damage[p]
-    sigma_eq = wp.length(tau_dev)
-    yield_eff = (1.0 - D) * yield_stress[p]
-
-    if sigma_eq > yield_eff:
-        epsilon_dev_norm = wp.length(epsilon_dev) + 1e-6
-
-        delta_gamma = epsilon_dev_norm - yield_eff / (2.0 * mu[p])
-        # Accumulate plastic strain
-        plastic_strain_increment = wp.sqrt(2.0 / 3.0) * delta_gamma
-        particle_accumulated_strain[p] += plastic_strain_increment
-
-        # === Damage evolution ===
-        if strainCriteria[p] > 0.0:
-            dD = plastic_strain_increment / strainCriteria[p]
-            damage[p] = wp.min(1.0, damage[p] + dD)
-            D = damage[p]  # Update effective value
-            
-        # === Phase transition ===
-        if damage[p] >= 1.0:
-            materialLabel[p] = 2
-            initialPhaseChangePosition[p] = particlePosition[p]
-            # estimate the velocity from energy release
-            # Convert deviatoric stress magnitude to velocity via elastic energy estimate #TODO: this can be computed from components directly rather than estimated
-            rho = density[p]
-
-            # sigma_vm = wp.length(cond)  # von Mises-like
-            # E = youngs_modulus[p]
-            # v_expected = wp.sqrt(efficiency * sigma_vm * sigma_vm / (rho * E))
-
-            # Compute elastic strain energy density: u = 0.5 * sigma : epsilon
-            u = 0.5 * (tau[0]*epsilon[0] + tau[1]*epsilon[1] + tau[2]*epsilon[2])
-
-            # Energy-to-velocity conversion
-            v_expected = wp.sqrt(2.0 * efficiency * u / rho)
-            
-            # Add in the direction of current motion
-            v_dir = wp.normalize(particleVelocity[p] + wp.vec3(1e-12))  # avoid divide by zero
-            particleVelocity[p] = particleVelocity[p] + v_expected * v_dir
-            initialPhaseChangeVelocity[p] = particleVelocity[p]
-            # initialPhaseChangeVelocity[p][0]=0.0
-            # initialPhaseChangeVelocity[p][1]=0.0
-            # initialPhaseChangeVelocity[p][2]=0.0
-            
-            return F_trial
-        
-        # Plastic correction
-        epsilon = epsilon - (delta_gamma / epsilon_dev_norm) * epsilon_dev
-
-        # Update yield stress (softening or hardening)
-        # dimensionless knobs: hardening[p] = \bar H, softening[p] = \bar S
-        dsy = 2.0 * mu[p] * (hardening[p] - softening[p]) * delta_gamma
-        yield_stress[p] = wp.max(0.0, yield_stress[p] + dsy)
-
-        # fail the material
-        if yield_stress[p] < 0.0:
-            yield_stress[p] = 0.0
-            mu[p] = 0.0
-            lam[p] = 0.0
-
-        # Reconstruct elastic part
-        sig_elastic = wp.mat33(
-            wp.exp(epsilon[0]), 0.0, 0.0,
-            0.0, wp.exp(epsilon[1]), 0.0,
-            0.0, 0.0, wp.exp(epsilon[2])
-        )
-        F_elastic = U * sig_elastic * wp.transpose(V)
-        return F_elastic
-
-    else:
-        return F_trial
-
 
 @wp.func
 def drucker_prager_return_mapping(
@@ -428,7 +297,7 @@ def drucker_prager_return_mapping(
         if yield_stress[p] < 0.0 or yield_eff < 0.0:
             damage[p] = 1.0
         # === Phase transition ===
-        if damage[p] >= 1.0:
+        if damage[p] >= 1.0 and materialLabel[p] == 1: # only allow transition from material 1 to 2
             materialLabel[p] = 2
             initialPhaseChangePosition[p] = particlePosition[p]
             # estimate the velocity from energy release
@@ -556,7 +425,7 @@ def p2g_apic_with_stress(
     #                       particle_v
     #                       particle_C
     p = wp.tid()
-    if activeLabel[p] == 1 and materialLabel[p] == 1: # only mpm particles contribute to grid, xpbd particles do not pull on the grid - they transfer directly to mpm via contact forces
+    if activeLabel[p] == 1 and materialLabel[p] <= 1: # only mpm particles contribute to grid, xpbd particles do not pull on the grid - they transfer directly to mpm via contact forces
     # if activeLabel[p] == 1: # all materials contribute to the grid so that materials that rely on the grid can interact with other materials
 
         # xpbd particles contribute ONLY MASS
@@ -781,7 +650,7 @@ def g2p(dt: float,
         ):
     p = wp.tid()
     if activeLabel[p] == 1:
-        if materialLabel[p] == 1:  # only mpm particles need grid information
+        if materialLabel[p] <= 1:  # only mpm particles need grid information
             grid_pos = (particle_x[p]-minBounds) * inv_dx
             base_pos_x = wp.int(grid_pos[0] - 0.5)
             base_pos_y = wp.int(grid_pos[1] - 0.5)
@@ -888,7 +757,7 @@ def accumulate_cell_divergence(
     Cell is determined by particle position (integer cell index).
     """
     p = wp.tid()
-    if activeLabel[p] == 1 and materialLabel[p] == 1:  # Only active MPM particles
+    if activeLabel[p] == 1 and materialLabel[p] <= 1:  # Only active MPM particles
         # Get cell index from particle position
         grid_pos = (particle_x[p] - minBounds) * inv_dx
         cell_x = wp.int(grid_pos[0])
@@ -930,7 +799,7 @@ def apply_volumetric_locking_correction(
     preserving the deviatoric (shear) component.
     """
     p = wp.tid()
-    if activeLabel[p] == 1 and materialLabel[p] == 1:  # Only active MPM particles
+    if activeLabel[p] == 1 and materialLabel[p] <= 1:  # Only active MPM particles
         # Get cell index
         grid_pos = (particle_x[p] - minBounds) * inv_dx
         cell_x = wp.int(grid_pos[0])
@@ -1310,7 +1179,7 @@ def update_C_and_F_from_velocity_change(
     - Only updates MPM particles that received contact impulses
     """
     p = wp.tid()
-    if activeLabel[p] == 1 and materialLabel[p] == 1:  # MPM particles only
+    if activeLabel[p] == 1 and materialLabel[p] <= 1:  # MPM particles only
         # Check if velocity changed (contact impulse applied)
         dv = particle_v_new[p] - particle_v_old[p]
         if wp.length(dv) > 1e-12:  # Only update if velocity changed significantly
@@ -1362,3 +1231,34 @@ def update_C_and_F_from_velocity_change(
 
 
 # the domain is bounded by a box
+
+@wp.kernel
+def deactivate_and_teleport_xpbd_below_datum(
+    particle_x: wp.array(dtype=wp.vec3),
+    particle_v: wp.array(dtype=wp.vec3),
+    activeLabel: wp.array(dtype=wp.int32),
+    materialLabel: wp.array(dtype=wp.int32),
+    z_datum: float,
+    teleport_distance: float
+):
+    """
+    Deactivates XPBD particles (materialLabel==2) that fall below z_datum.
+    Teleports them down by teleport_distance (typically 2x domain height) to remove them from view.
+    This allows particles that have "exited" the simulation to be recycled or simply removed.
+    """
+    p = wp.tid()
+    
+    # Only process active XPBD particles
+    if activeLabel[p] == 1 and materialLabel[p] == 2:
+        pos = particle_x[p]
+        
+        if pos[2] < z_datum:
+            # Deactivate the particle
+            activeLabel[p] = 0
+            
+            # Teleport down to avoid any residual interactions
+            new_pos = wp.vec3(pos[0], pos[1], pos[2] - teleport_distance)
+            particle_x[p] = new_pos
+            
+            # Zero velocity to prevent any momentum issues if reactivated
+            particle_v[p] = wp.vec3(0.0, 0.0, 0.0)

@@ -258,10 +258,13 @@ def save_grid_and_particles_vti_vtp(
     particle_radius=0.5, # optional radius field or scalar
     particle_velocity=None,  # shape (N, 3)
     particle_ys=None,    # shape (N,)
+    particle_effective_ys=None,  # shape (N,) - for Drucker-Prager: ys - alpha*p
     particle_damage=None, # shape (N,)
     particle_mean_stress=None,  # shape (N,)
     particle_von_mises=None,     # shape (N,)
-    particle_stress_tensor=None  # shape (N, 3, 3) or (N, 9)
+    particle_stress_tensor=None,  # shape (N, 3, 3) or (N, 9)
+    particle_active_label=None,   # shape (N,) - active/inactive flag
+    particle_material_label=None  # shape (N,) - 0=MPM(locked), 1=MPM(transitionable), 2=XPBD
 ):
     os.makedirs(os.path.dirname(output_prefix), exist_ok=True)
 
@@ -314,6 +317,12 @@ def save_grid_and_particles_vti_vtp(
         vtk_ys.SetName("yield_stress")
         polydata.GetPointData().AddArray(vtk_ys)
 
+    # Add effective yield stress (scalar) - for Drucker-Prager: (ys - alpha*p)*(1-D)
+    if particle_effective_ys is not None:
+        vtk_effective_ys = numpy_support.numpy_to_vtk(particle_effective_ys.astype(np.float32))
+        vtk_effective_ys.SetName("effective_yield_stress")
+        polydata.GetPointData().AddArray(vtk_effective_ys)
+
     # Add damage (scalar)
     if particle_damage is not None:
         vtk_damage = numpy_support.numpy_to_vtk(particle_damage.astype(np.float32))
@@ -350,6 +359,18 @@ def save_grid_and_particles_vti_vtp(
             vtk_stress.SetName("stress_tensor")
             vtk_stress.SetNumberOfComponents(6)
             polydata.GetPointData().AddArray(vtk_stress)
+
+    # Add active label (integer)
+    if particle_active_label is not None:
+        vtk_active_label = numpy_support.numpy_to_vtk(particle_active_label.astype(np.int32))
+        vtk_active_label.SetName("active_label")
+        polydata.GetPointData().AddArray(vtk_active_label)
+
+    # Add material label (integer): 0=MPM(locked), 1=MPM(transitionable), 2=XPBD
+    if particle_material_label is not None:
+        vtk_material_label = numpy_support.numpy_to_vtk(particle_material_label.astype(np.int32))
+        vtk_material_label.SetName("material_label")
+        polydata.GetPointData().AddArray(vtk_material_label)
 
     writer_vtp = vtk.vtkXMLPolyDataWriter()
     writer_vtp.SetFileName(f"{output_prefix}_particles.vtp")
@@ -522,6 +543,13 @@ def save_mpm(
     s = sigma - mean_stress[:, None, None] * identity  # (N, 3, 3)
     von_mises = np.sqrt(1.5 * np.sum(s**2, axis=(1, 2)))  # (N,)
 
+    # Compute effective yield stress for Drucker-Prager: (ys - alpha*p)*(1-D)
+    # where p = -mean_stress (pressure, positive in compression)
+    ys = mpm.ys.numpy()
+    alpha = mpm.alpha.numpy()
+    damage = mpm.particle_damage.numpy()
+    effective_ys = (ys - alpha * mean_stress) * (1.0 - damage)
+
     # --- Save if requested ---
     save_grid_and_particles_vti_vtp(
         output_prefix=f"{sim.outputFolder}/sim_step_{bigStep:04d}{counter:06d}",
@@ -531,10 +559,13 @@ def save_mpm(
         particle_positions=sim.particle_x.numpy(),
         particle_radius=sim.particle_radius.numpy(),
         particle_velocity=sim.particle_v.numpy(),
-        particle_ys=mpm.ys.numpy(),
-        particle_damage=mpm.particle_damage.numpy(),
+        particle_ys=ys,
+        particle_effective_ys=effective_ys,
+        particle_damage=damage,
         particle_mean_stress=mean_stress,
         particle_von_mises=von_mises,
-        particle_stress_tensor=sigma  # Add full stress tensor
+        particle_stress_tensor=sigma,  # Add full stress tensor
+        particle_active_label=sim.activeLabel.numpy(),
+        particle_material_label=sim.materialLabel.numpy()
     )
 

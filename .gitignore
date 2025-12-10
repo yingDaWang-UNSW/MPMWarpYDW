@@ -10,3 +10,6 @@ output/*
 .vscode*
 benchmarks/generalBenchmark/output*
 benchmarks/spatialBenchmark/output*
+benchmarks/cavingBenchmark/output*
+benchmarks/*/*.h5
+benchmarks/*/*.vtp

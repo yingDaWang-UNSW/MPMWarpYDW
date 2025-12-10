@@ -22,9 +22,13 @@ def get_args():
     # Simulation steps & time
     parser.add_argument("--dt", type=float, default=1e-3, help="Time step for MPM (s). Set to 0 to auto-estimate from CFL condition (safety factor 0.3)")
     parser.add_argument("--dtxpbd", type=float, default=1e-2, help="Time step for XPBD (s). dt will be adjusted to ensure dtxpbd/dt is an integer.")
-    parser.add_argument("--nSteps", type=int, default=2500000, help="Number of simulation steps")
+    parser.add_argument("--bigStepDuration", type=float, default=10.0, help="Maximum duration of combined MPM+XPBD phase in seconds")
+    parser.add_argument("--xpbdOnlyDuration", type=float, default=0.0, help="Duration of XPBD-only phase after combined phase (seconds). Set to 0 to disable.")
     parser.add_argument("--bigSteps", type=int, default=100, help="Number of big steps (outer loop iterations)")
     parser.add_argument("--residualThreshold", type=float, default=5e-1, help="Residual threshold for convergence")
+    parser.add_argument("--damage_stall_threshold", type=float, default=1e-9, help="If mean damage change per step falls below this, terminate combined phase early")
+    parser.add_argument("--damage_stall_steps", type=int, default=100, help="Number of consecutive steps below damage_stall_threshold to trigger early termination")
+    parser.add_argument("--xpbd_sleep_termination_ratio", type=float, default=0.95, help="Terminate XPBD-only phase early if this fraction of XPBD particles are asleep (0-1). Set to 1.0 to disable.")
 
     # Damping & integration
     parser.add_argument("--rpic_damping", type=float, default=0.2, help="Damping for P2G transfer")
@@ -77,6 +81,12 @@ def get_args():
     parser.add_argument("--K0", type=float, default=0.5, help="Lateral earth pressure coefficient for initial stress")
     parser.add_argument("--z_top", type=float, default=None, help="Reference height for geostatic stress (m). If None, uses max particle z-coordinate")
     parser.add_argument("--initialise_geostatic", type=int, default=1, help="initialise geo or let settle")
+    
+    # Seismic/gravity pulse parameters (to trigger damage propagation)
+    parser.add_argument("--gravity_pulse_factor", type=float, default=1.0, 
+                        help="Gravity multiplier during pulse phase at start of each big step (e.g., 2.0 = 2x gravity). Set to 1.0 to disable.")
+    parser.add_argument("--gravity_pulse_steps", type=int, default=0, 
+                        help="Number of steps to apply gravity pulse at start of each big step. Set to 0 to disable.")
 
     # Boundary & friction
     parser.add_argument("--boundFriction", type=float, default=0.2, help="Bounding box friction coefficient")
@@ -90,6 +100,10 @@ def get_args():
     parser.add_argument("--xpbd_relaxation", type=float, default=1.0, help="XPBD relaxation factor")
     parser.add_argument("--xpbd_mpm_coupling_strength", type=float, default=0.25, 
                         help="MPM-XPBD coupling strength: scales XPBD displacement to MPM velocity impulse (empirically tuned, typically 0.2-0.3)")
+    parser.add_argument("--xpbd_deactivation_z_datum", type=float, default=None, 
+                        help="Z coordinate below which XPBD particles are deactivated and teleported. If None, uses minBounds[2] (bottom of domain).")
+    parser.add_argument("--mpm_contact_transition_lock", type=int, default=1,
+                        help="If 1, MPM particles in contact with XPBD particles cannot transition (materialLabel=0). If 0, all MPM particles can transition.")
     parser.add_argument("--dynamicParticleFriction", type=float, default=0.05, help="Dynamic friction for XPBD")
     parser.add_argument("--staticVelocityThreshold", type=float, default=1e-5, help="Static velocity threshold")
     parser.add_argument("--staticParticleFriction", type=float, default=0.1, help="Static friction for XPBD")

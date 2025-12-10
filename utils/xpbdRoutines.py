@@ -1,6 +1,26 @@
 import warp as wp
 
 @wp.kernel
+def reset_mpm_contact_labels(
+    activeLabel: wp.array(dtype=wp.int32),
+    materialLabel: wp.array(dtype=wp.int32),
+):
+    """
+    Reset all MPM particles (materialLabel 0 or 1) back to materialLabel=1.
+    This is called before contact detection so that particles not in contact
+    with XPBD can transition if they fail. Particles that ARE in contact will
+    be set to 0 in the contact kernel.
+    
+    materialLabel convention:
+    - 0: MPM, in contact with XPBD (cannot transition)
+    - 1: MPM, not in contact (can transition to XPBD if damage >= 1)
+    - 2: XPBD particle
+    """
+    tid = wp.tid()
+    if activeLabel[tid] == 1 and materialLabel[tid] == 0:
+        materialLabel[tid] = 1
+
+@wp.kernel
 def integrateParticlesXPBD(
     activeLabel: wp.array(dtype=wp.int32),
     materialLabel: wp.array(dtype=wp.int32),
@@ -13,7 +33,7 @@ def integrateParticlesXPBD(
     v_max: float,
 ):
     tid = wp.tid()
-    if activeLabel[tid] == 1: # both mpm and xpbd particles contribute to the grid
+    if activeLabel[tid] == 1:
         if materialLabel[tid] == 2:  # xpbd particles
             x0 = x[tid]
             v0 = v[tid]
@@ -114,7 +134,7 @@ def my_solve_particle_bound_contacts(
                 delta_f = wp.normalize(vt) * lambda_f
 
             wp.atomic_add(delta, tid, (delta_f - delta_n) / wi * relaxation * wi)
-#TODO: particles that interact with mpm points need to compensate for the fact the mpm point is static, and also the impulse needs to be saved to project back into the mpm grid
+
 @wp.kernel
 def my_solve_particle_particle_contacts(
     activeLabel: wp.array(dtype=wp.int32),
@@ -131,11 +151,20 @@ def my_solve_particle_particle_contacts(
     max_radius: float,
     dt: float,
     relaxation: float,
+    mpm_contact_transition_lock: int,
     deltas: wp.array(dtype=wp.vec3),
 ):
+    """
+    Solve particle-particle contacts using XPBD.
+    
+    Also handles MPM-XPBD contact detection (if mpm_contact_transition_lock == 1):
+    - If an MPM particle (materialLabel <= 1) contacts an XPBD particle (materialLabel == 2),
+      the MPM particle's materialLabel is set to 0 (preventing phase transition).
+    - MPM-MPM collisions are skipped (handled by continuum mechanics).
+    """
     tid = wp.tid()
     if activeLabel[tid]==1:
-        if materialLabel[tid] > 0:
+        if materialLabel[tid] >= 0:
             i = wp.hash_grid_point_id(grid, tid)
             if i == -1:
                 return
@@ -152,15 +181,27 @@ def my_solve_particle_particle_contacts(
             alpha = 0.0 # XPBD compliance factor
             while wp.hash_grid_query_next(query, index):
                 if activeLabel[index]==1 and index != i and particle_mass[index] > 0.0:
-                    # Skip MPM-MPM collisions (materialLabel==1 for both)
-                    if materialLabel[i] == 1 and materialLabel[index] == 1:
+                    # Skip MPM-MPM collisions (materialLabel<=1 for both)
+                    if materialLabel[i] <= 1 and materialLabel[index] <= 1:
                         continue
-                    
+
                     n = x - particle_x[index]
                     d = wp.length(n)
                     err = d - radius - particle_radius[index]
                     w2 = 1.0/particle_mass[index]
                     denom = w1 + w2
+                    # if err <= (radius + particle_radius[index])*0.5 and denom > 0.0:
+                    if err <= k_cohesion and denom > 0.0:
+                        # Check for MPM-XPBD contact and set materialLabel=0 for MPM particle
+                        # This prevents the MPM particle from transitioning to XPBD while in contact
+                        if mpm_contact_transition_lock == 1:
+                            if materialLabel[i] <= 1 and materialLabel[index] == 2:
+                                # i is MPM, index is XPBD -> lock i
+                                materialLabel[i] = 0
+                            if materialLabel[i] == 2 and materialLabel[index] <= 1:
+                                # i is XPBD, index is MPM -> lock index
+                                materialLabel[index] = 0
+
                     if err <= k_cohesion and denom > 0.0:
                         n = n / d
                         vrel = v - particle_v[index]
@@ -226,6 +267,7 @@ def apply_mpm_contact_impulses(
     dt: float,
     v_max: float,
     coupling_strength: float,
+    xpbd_only: int,
     v_out: wp.array(dtype=wp.vec3),
 ):
     """
@@ -238,6 +280,7 @@ def apply_mpm_contact_impulses(
                           XPBD position correction to MPM velocity impulse.
                           Related to soft coupling stiffness and stability.
                           Lower = softer coupling, higher = stiffer (may be unstable).
+        xpbd_only: If 1, only reset position but don't change velocity (MPM frozen).
     
     This preserves:
     - XPBD convergence during iterations (all particles move)
@@ -245,22 +288,26 @@ def apply_mpm_contact_impulses(
     - Contact impulse transfer (velocity correction applied)
     """
     tid = wp.tid()
-    if activeLabel[tid] == 1 and materialLabel[tid] == 1:  # MPM particles only
-        # MPM velocity comes from grid (already has gravity applied)
-        # We only add the contact impulse from XPBD position correction
+    if activeLabel[tid] == 1 and materialLabel[tid] <= 1:  # MPM particles only
+        # Always reset position - MPM grid controls position
+        x_final[tid] = x_orig[tid]
         
-        # v_orig = MPM velocity from grid (includes gravity already)
-        # x_final - x_orig = contact-induced position change from XPBD
-        
-        v_from_grid = v_orig[tid]
-        contact_impulse = (x_final[tid] - x_orig[tid]) / dt * coupling_strength
-        x_final[tid] = x_orig[tid]  # Reset position - MPM grid controls position
-        v_corrected = v_from_grid + contact_impulse
-        v_mag = wp.length(v_corrected)
-        if v_mag > v_max:
-            v_corrected *= v_max / v_mag
+        # Only apply velocity impulse if not in xpbd_only mode
+        if xpbd_only == 0:
+            # MPM velocity comes from grid (already has gravity applied)
+            # We only add the contact impulse from XPBD position correction
+            
+            # v_orig = MPM velocity from grid (includes gravity already)
+            # x_final - x_orig = contact-induced position change from XPBD
+            
+            v_from_grid = v_orig[tid]
+            contact_impulse = (x_final[tid] - x_orig[tid]) / dt * coupling_strength
+            v_corrected = v_from_grid + contact_impulse
+            v_mag = wp.length(v_corrected)
+            if v_mag > v_max:
+                v_corrected *= v_max / v_mag
 
-        v_out[tid] = v_corrected
+            v_out[tid] = v_corrected
 
 # TODO: in fs5, velocities arent zeroed on sleeping particles. in FS6, jury is still out.
 @wp.kernel
@@ -273,13 +320,17 @@ def sleepParticles(
     particle_positions_after: wp.array(dtype=wp.vec3),
     particle_distance_total: wp.array(dtype=float),
     dt: float,
+    total_xpbd: wp.array(dtype=wp.int32),
+    sleeping_xpbd: wp.array(dtype=wp.int32),
 ):
     tid = wp.tid()
     if activeLabel[tid]==1:
         if materialLabel[tid] == 2:
+            wp.atomic_add(total_xpbd, 0, 1)
             d=wp.length(particle_positions_after[tid]-particle_positions_prev[tid])
             if d/dt<sleepThreshold*radius[tid]:
                 particle_positions_after[tid]=particle_positions_prev[tid]
+                wp.atomic_add(sleeping_xpbd, 0, 1)
             particle_distance_total[tid]=particle_distance_total[tid]+d
 
 @wp.kernel

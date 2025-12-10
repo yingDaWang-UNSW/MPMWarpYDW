@@ -17,7 +17,22 @@ class SimState:
         self.dt = args.dt
         self.dtxpbd = args.dtxpbd
         self.mpmStepsPerXpbdStep = int(args.dtxpbd / args.dt)
-        self.nSteps = args.nSteps
+        
+        # Calculate nSteps from bigStepDuration (time in seconds)
+        self.bigStepDuration = args.bigStepDuration
+        self.nSteps = int(args.bigStepDuration / args.dt)
+        
+        # XPBD-only phase parameters
+        self.xpbdOnlyDuration = args.xpbdOnlyDuration
+        self.xpbdOnlySteps = int(args.xpbdOnlyDuration / args.dtxpbd) if args.xpbdOnlyDuration > 0 else 0
+        
+        # Early termination based on damage stalling
+        self.damage_stall_threshold = args.damage_stall_threshold
+        self.damage_stall_steps = args.damage_stall_steps
+        
+        # Early termination for XPBD-only phase based on sleeping particles
+        self.xpbd_sleep_termination_ratio = args.xpbd_sleep_termination_ratio
+        
         self.bigSteps = args.bigSteps
         self.residualThreshold = args.residualThreshold
         self.t = 0.0  # simulation time
@@ -38,7 +53,7 @@ class SimState:
         self.particle_vol = None
         self.particle_radius = None
         self.particle_density = None
-        self.materialLabel = None  # 1=MPM, 2=XPBD
+        self.materialLabel = None  # 0,1=MPM (0 is not allowed to transition, 1 is allowed - any mpm particles that are in contact with xpbd particles have a switch that can cause them to never transition), 2=XPBD
         self.activeLabel = None    # 0=sleeping, 1=active
         self.particleBCMask = None  # boundary condition mask
 
@@ -51,6 +66,10 @@ class SimState:
         # Convergence tracking
         self.residual = wp.array([1e10], dtype=float, device=device)
         self.numActiveParticles = wp.array([0], dtype=wp.int32, device=device)
+        
+        # XPBD particle counting for sleep-based early termination
+        self.numTotalXPBD = wp.array([0], dtype=wp.int32, device=device)
+        self.numSleepingXPBD = wp.array([0], dtype=wp.int32, device=device)
 
 class MPMState:
     """MPM-specific state variables"""
@@ -121,6 +140,7 @@ class XPBDState:
         self.xpbd_iterations = args.xpbd_iterations
         self.xpbd_relaxation = args.xpbd_relaxation
         self.xpbd_mpm_coupling_strength = args.xpbd_mpm_coupling_strength
+        self.mpm_contact_transition_lock = args.mpm_contact_transition_lock
         self.dynamicParticleFriction = args.dynamicParticleFriction
         self.staticParticleFriction = args.staticParticleFriction
         self.staticVelocityThreshold = args.staticVelocityThreshold

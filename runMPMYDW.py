@@ -69,7 +69,7 @@ print(f'Domain bounds: X=[{minBounds[0]:.2f}, {maxBounds[0]:.2f}], Y=[{minBounds
 # Check if HDF5 contains spatial property arrays
 spatial_properties_available = {}
 spatial_property_names = ['density', 'E', 'nu', 'ys', 'alpha', 'hardening', 'softening', 
-                          'eta_shear', 'eta_bulk', 'strainCriteria']
+                          'eta_shear', 'eta_bulk', 'strainCriteria', 'damage']
 for prop_name in spatial_property_names:
     if prop_name in h5file:
         spatial_properties_available[prop_name] = True
@@ -174,12 +174,15 @@ print(f"  dtxpbd:       {args.dtxpbd:.2e} s")
 print(f"  MPM steps per XPBD step: {mpmStepsPerXpbdStep}")
 
 # ========== Initialize State Classes ==========
-print(f"\nRunning simulation with dt={args.dt}, dtxpbd={args.dtxpbd}, nSteps={args.nSteps}, bigSteps={args.bigSteps}, residualThreshold={args.residualThreshold}")
+print(f"\nRunning simulation with dt={args.dt}, dtxpbd={args.dtxpbd}, bigStepDuration={args.bigStepDuration}s, bigSteps={args.bigSteps}, residualThreshold={args.residualThreshold}")
 
 # Create state containers
 sim = SimState(args, nPoints, device=device)
 mpm = MPMState(args, sim.nPoints, tuple(gridDims), device=device)
 xpbd = XPBDState(args, sim.nPoints, device=device)
+
+print(f"  Calculated nSteps per big step: {sim.nSteps} (from {args.bigStepDuration}s / {args.dt}s)")
+print(f"  Total simulation time: {sim.bigSteps * args.bigStepDuration}s ({sim.bigSteps} big steps × {args.bigStepDuration}s)")
 
 # Store domain bounds in sim state as wp.vec3 for kernel use
 sim.minBounds = wp.vec3(minBounds[0], minBounds[1], minBounds[2])
@@ -260,6 +263,13 @@ if spatial_properties_available.get('strainCriteria', False):
     print(f"  Loaded strainCriteria from HDF5: {strainCriteria_array.min():.3f} to {strainCriteria_array.max():.3f}")
 else:
     strainCriteria_array = np.full(sim.nPoints, args.strainCriteria, dtype=np.float32)
+
+# Load damage from HDF5 if available (before closing file)
+if spatial_properties_available.get('damage', False):
+    damage_array = np.array(h5file["damage"], dtype=np.float32)
+    print(f"  Loaded damage from HDF5: {damage_array.min():.3f} to {damage_array.max():.3f}")
+else:
+    damage_array = None  # Will be initialized later
 
 # Close HDF5 file after loading all properties
 h5file.close()
@@ -428,10 +438,14 @@ wp.launch(kernel=mpmRoutines.set_mat33_to_copy,
           inputs=[mpm.particle_F, mpm.particle_F_trial],
           device=device)
 
-# Initialize damage (can add random perturbation if needed)
-damagetemp = np.zeros(sim.nPoints, dtype=np.float32)
-np.random.seed(0)  # for reproducibility
-damagetemp = np.random.rand(sim.nPoints).astype(np.float32) * 0  # random damage between 0 and 0.1
+# Initialize damage (from HDF5 if available, otherwise zeros with optional random perturbation)
+if damage_array is not None:
+    damagetemp = damage_array
+    print(f"  Using damage from HDF5: {damagetemp.sum()} particles with damage > 0")
+else:
+    damagetemp = np.zeros(sim.nPoints, dtype=np.float32)
+    np.random.seed(0)  # for reproducibility
+    damagetemp = np.random.rand(sim.nPoints).astype(np.float32) * 0  # random damage between 0 and 0.1
 mpm.particle_damage = wp.array(damagetemp, dtype=float, device=device)
 
 # Compute particle radius
@@ -514,21 +528,72 @@ if sim.render:
     else:
         raise ValueError(f"Unknown render_backend: {args.render_backend}")
 
+# ========== Helper function for render/save ==========
+def check_render_save(sim, mpm, args, bigStep, counter, nextRenderTime, dt_tolerance, renderer=None, maxStress=None, force=False):
+    """Check if we should render/save and do so. Returns (nextRenderTime, maxStress).
+    
+    Args:
+        force: If True, force render/save regardless of time (for early termination)
+    """
+    shouldRenderSave = force or sim.t >= (nextRenderTime - 0.5 * dt_tolerance)
+    
+    if shouldRenderSave:
+        if sim.render:
+            if args.render_backend == "usd":
+                from utils import usdRenderer
+                maxStress = usdRenderer.render_mpm_usd(renderer, sim, mpm, bigStep, counter, maxStress=maxStress)
+            else:  # opengl
+                maxStress = fs5PlotUtils.render_mpm(renderer, sim, mpm, bigStep, counter, maxStress=maxStress)
+        
+        if sim.saveFlag:
+            fs5PlotUtils.save_mpm(sim, mpm, bigStep, counter)
+        if not force:
+            nextRenderTime += args.render_interval
+    
+    return nextRenderTime, maxStress
+
 # ========== Main Simulation Loop ==========
 startTime=time.time()
 nextRenderTime = args.render_interval  # Next simulation time to render/save
+
+# Store base gravity for pulse restoration
+base_gravity = sim.gravity
+
 for bigStep in range(0, sim.bigSteps):
     print(f"Starting big step {bigStep+1} of {sim.bigSteps}, meanys: {np.mean(mpm.ys.numpy()):.2f}")
+    
+    # ========== PHASE 1: Combined MPM+XPBD ==========
+    print(f"  Phase 1: Combined MPM+XPBD (max {sim.bigStepDuration:.1f}s)")
+    
+    # ========== Apply gravity pulse at start of big step ==========
+    if args.gravity_pulse_factor != 1.0 and args.gravity_pulse_steps > 0:
+        pulse_gravity = wp.vec3(
+            base_gravity[0] * args.gravity_pulse_factor,
+            base_gravity[1] * args.gravity_pulse_factor,
+            base_gravity[2] * args.gravity_pulse_factor
+        )
+        sim.gravity = pulse_gravity
+        print(f"    Applying gravity pulse: {args.gravity_pulse_factor}x for {args.gravity_pulse_steps} steps")
 
     counter=0
     residualCPU=1e10
     minSteps = 1000  # minimum steps to ensure initial conditions are met
+    
+    # Damage tracking for early termination
+    prev_mean_damage = np.mean(mpm.particle_damage.numpy())
+    damage_stall_counter = 0
+    combined_phase_terminated_early = False
+    
     while counter < sim.nSteps and (counter < minSteps or residualCPU > sim.residualThreshold):
         stepStartTime = time.time()
         sim.residual.zero_()  # reset residual at each step
         sim.numActiveParticles.zero_()  # reset active particle count at each step
-        # if counter > 10000:
-        #     sim.gravity = wp.vec3(0.0, 0.0, 0.0)  # disable gravity after 10000 steps to allow settling
+        
+        # ========== End gravity pulse after specified steps ==========
+        if counter == args.gravity_pulse_steps and args.gravity_pulse_factor != 1.0:
+            sim.gravity = base_gravity
+            print(f"    Gravity pulse ended, restored to normal gravity")
+        
         # perform the mpm simulation step
         simulationRoutines.mpmSimulationStep(sim, mpm, xpbd, device)
 
@@ -565,45 +630,127 @@ for bigStep in range(0, sim.bigSteps):
         counter=counter+1
         sim.t += sim.dt
         
+        # Track damage accumulation for early termination
+        current_mean_damage = np.mean(mpm.particle_damage.numpy())
+        damage_change = current_mean_damage - prev_mean_damage
+        if damage_change < sim.damage_stall_threshold and counter > minSteps:
+            damage_stall_counter += 1
+        else:
+            damage_stall_counter = 0  # Reset if damage is still accumulating
+        prev_mean_damage = current_mean_damage
+        
+        # Check for early termination due to damage stalling
+        if damage_stall_counter >= sim.damage_stall_steps and counter > minSteps:
+            print(f"    Early termination: damage stalled for {sim.damage_stall_steps} consecutive steps")
+            combined_phase_terminated_early = True
+            # Restore gravity if still in pulse mode
+            if counter < args.gravity_pulse_steps and args.gravity_pulse_factor != 1.0:
+                sim.gravity = base_gravity
+            break
+        
         # Print status every 100 steps
         if np.mod(counter,100)==0:
-            print(f'Step: {counter}, simulationTime: {sim.t:.4f}s, deltaTime: +{time.time()-stepStartTime:.4f}s, realTime: {time.time()-startTime:.4f}s, residual: {residualCPU:.4e}, mean accumulated plastic strain: {np.mean(mpm.particle_accumulated_strain.numpy()):.4f}, active particles: {sim.numActiveParticles.numpy()[0]}')
-        
-        # Check if we should render/save this timestep (use small tolerance for floating point comparison)
-        shouldRenderSave = sim.t >= (nextRenderTime - 0.5 * sim.dt)
-        
-        # Render based on simulation time interval
-        if sim.render and shouldRenderSave:
-            if args.render_backend == "usd":
-                from utils import usdRenderer
-                maxStress = usdRenderer.render_mpm_usd(renderer, sim, mpm, bigStep, counter, maxStress=maxStress)
-            else:  # opengl
-                maxStress = fs5PlotUtils.render_mpm(renderer, sim, mpm, bigStep, counter, maxStress=maxStress)
-        
-        # Save based on simulation time interval (use same timing as render)
-        if sim.saveFlag and shouldRenderSave:
-            fs5PlotUtils.save_mpm(sim, mpm, bigStep, counter)
-        
-        # Update next render time after save/render
-        if shouldRenderSave:
-            nextRenderTime += args.render_interval
-    # when convergence is reached, reduce the yield stress by 10% to mimic creep over a long time TODO: the creep should be a function of damage in some spatially varying way
+            print(f'  Step: {counter}, simulationTime: {sim.t:.4f}s, deltaRealTime: +{time.time()-stepStartTime:.4f}s, realTime: {time.time()-startTime:.4f}s, residual: {residualCPU:.4e}, mean damage: {current_mean_damage:.9f} ({damage_change:.3e}), active particles: {sim.numActiveParticles.numpy()[0]}')
 
-    # wp.launch(
-    #     kernel=mpmRoutines.creep_by_damage_with_baseline,
-    #     dim=sim.nPoints,
-    #     inputs=[
-    #         sim.materialLabel,
-    #         mpm.particle_damage,
-    #         mpm.ys,
-    #         mpm.ys_base,
-    #         counter*sim.dt,         # or sim.dt * sim.mpmStepsPerXpbdStep
-    #         0.0,           # base creep rate A_base (undamaged)
-    #         0.0,           # damage-based creep A_damage
-    #         1.5             # damage exponent beta
-    #     ],
-    #     device=device
-    # )
+        # Render/save if needed
+        nextRenderTime, maxStress = check_render_save(
+            sim, mpm, args, bigStep, counter, nextRenderTime, sim.dt,
+            renderer=renderer if sim.render else None, maxStress=maxStress if sim.render else None
+        )
+    
+    print(f"  Phase 1 completed after {counter} steps ({counter*sim.dt:.2f}s sim time)")
+    # Force render/save before continuing
+    nextRenderTime, maxStress = check_render_save(
+        sim, mpm, args, bigStep, counter, nextRenderTime, sim.dt,
+        renderer=renderer if sim.render else None, maxStress=maxStress if sim.render else None,
+        force=True
+    )    
+    # ========== PHASE 2: XPBD-only (debris settling) ==========
+    if sim.xpbdOnlySteps > 0:
+        print(f"  Phase 2: XPBD-only (debris settling, {sim.xpbdOnlyDuration:.1f}s / {sim.xpbdOnlySteps} steps)")
+        xpbd_phase_terminated_early = False
+        
+        for xpbd_counter in range(1, sim.xpbdOnlySteps + 1):
+            stepStartTime = time.time()
+            simulationRoutines.xpbdSimulationStep(sim, mpm, xpbd, device, xpbd_only=True)
+            sim.t += sim.dtxpbd
+            counter += 1
+            
+            # Check for sleep-based early termination (counts already computed by sleepParticles in xpbdSimulationStep)
+            if sim.xpbd_sleep_termination_ratio < 1.0:
+                total_xpbd = sim.numTotalXPBD.numpy()[0]
+                sleeping_xpbd = sim.numSleepingXPBD.numpy()[0]
+                
+                if total_xpbd > 0:
+                    sleep_ratio = sleeping_xpbd / total_xpbd
+                    if sleep_ratio >= sim.xpbd_sleep_termination_ratio:
+                        print(f"    Early termination: {sleeping_xpbd}/{total_xpbd} ({sleep_ratio*100:.1f}%) XPBD particles asleep")
+                        xpbd_phase_terminated_early = True
+                        break
+            
+            if np.mod(xpbd_counter, 100) == 0:
+                total_xpbd = sim.numTotalXPBD.numpy()[0]
+                sleeping_xpbd = sim.numSleepingXPBD.numpy()[0]
+                sleep_pct = (sleeping_xpbd / total_xpbd * 100) if total_xpbd > 0 else 0.0
+                print(f'    XPBD Step: {xpbd_counter}/{sim.xpbdOnlySteps}, simulationTime: {sim.t:.4f}s, deltaRealTime: +{time.time()-stepStartTime:.4f}s, realTime: {time.time()-startTime:.4f}s, sleeping%: {sleep_pct:.2f}%')
+            
+            nextRenderTime, maxStress = check_render_save(
+                sim, mpm, args, bigStep, counter, nextRenderTime, sim.dtxpbd,
+                renderer=renderer if sim.render else None, maxStress=maxStress if sim.render else None
+            )
+        
+        if xpbd_phase_terminated_early:
+            print(f"  Phase 2 terminated early after {xpbd_counter} XPBD steps")
+        else:
+            print(f"  Phase 2 completed after {xpbd_counter} XPBD steps")
+        # Force render/save before continuing
+        nextRenderTime, maxStress = check_render_save(
+            sim, mpm, args, bigStep, counter, nextRenderTime, sim.dt,
+            renderer=renderer if sim.render else None, maxStress=maxStress if sim.render else None,
+            force=True
+        )    
+    # ========== End of Big Step: Deactivate XPBD particles below datum ==========
+    # Compute deactivation datum (use args or default to bottom of domain)
+    if args.xpbd_deactivation_z_datum is not None:
+        z_datum = args.xpbd_deactivation_z_datum
+    else:
+        z_datum = float(minBounds[2])  # Bottom of domain
+    
+    # Teleport distance = 2x domain height to ensure particles are well out of view
+    domain_height = float(maxBounds[2] - minBounds[2])
+    teleport_distance = 2.0 * domain_height
+    
+    wp.launch(
+        kernel=mpmRoutines.deactivate_and_teleport_xpbd_below_datum,
+        dim=sim.nPoints,
+        inputs=[
+            sim.particle_x,
+            sim.particle_v,
+            sim.activeLabel,
+            sim.materialLabel,
+            z_datum,
+            teleport_distance
+        ],
+        device=device
+    )
+    
+    # when convergence is reached, reduce the yield stress: a function of damage in some spatially varying way
+
+    wp.launch(
+        kernel=mpmRoutines.creep_by_damage_with_baseline,
+        dim=sim.nPoints,
+        inputs=[
+            sim.materialLabel,
+            mpm.particle_damage,
+            mpm.ys,
+            mpm.ys_base,
+            counter*sim.dt,         # or sim.dt * sim.mpmStepsPerXpbdStep
+            0.0,           # base creep rate A_base (undamaged)
+            1e5,           # damage-based creep A_damage
+            1.0            # damage exponent beta
+        ],
+        device=device
+    )
 
 # ========== Finalize Renderer ==========
 if sim.render and args.render_backend == "usd":

@@ -3,7 +3,7 @@
   
   "dt": 1e-4,
   "dtxpbd": 0.01,
-  "nSteps": 10000,
+  "bigStepDuration": 1.0,
   "bigSteps": 1,
   "residualThreshold": 1e-8,
   

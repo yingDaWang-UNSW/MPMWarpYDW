@@ -23,14 +23,19 @@ def compute_stress_from_F_trial(particle_F: wp.array(dtype=wp.mat33), ...):
 
 ### 2. Three-Phase Material Model
 **Material labels determine physics:**
-- `materialLabel=0`: Inactive (not simulated)
-- `materialLabel=1`: MPM continuum (elastic-plastic, stress-based)
+- `materialLabel=0`: MPM continuum (in contact with XPBD, **cannot transition**)
+- `materialLabel=1`: MPM continuum (not in contact, **can transition** to XPBD if damage >= 1)
 - `materialLabel=2`: XPBD discrete particles (post-failure, contact-based)
 
-**One-way transition when `damage >= 1.0`:**
+**MPM-XPBD contact locking:**
+- Before each XPBD step, all MPM particles (label 0) are reset to label 1
+- During contact detection, if an MPM particle contacts an XPBD particle, it's set to label 0
+- This prevents MPM particles from transitioning while supporting XPBD debris
+
+**One-way transition when `damage >= 1.0` AND `materialLabel == 1`:**
 ```python
 # In mpmRoutines.py return mapping
-if damage[p] >= 1.0:
+if damage[p] >= 1.0 and materialLabel[p] == 1:  # Only label 1 can transition
     materialLabel[p] = 2  # MPM → XPBD
     # Energy release: elastic strain energy → kinetic energy
     v_release = wp.sqrt(2.0 * efficiency * strain_energy / rho)

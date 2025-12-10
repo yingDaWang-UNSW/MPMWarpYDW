@@ -5,7 +5,7 @@
   
   "dt": 0.0005,
   "dtxpbd": 0.01,
-  "nSteps": 10000,
+  "bigStepDuration": 5.0,
   "bigSteps": 1,
   "residualThreshold": 0.00000005,
   

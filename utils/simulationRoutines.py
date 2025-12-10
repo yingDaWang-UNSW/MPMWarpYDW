@@ -253,9 +253,19 @@ def mpmSimulationStep(sim, mpm, xpbd, device,):
             device=device
         )
 
-def xpbdSimulationStep(sim, mpm, xpbd, device):
+def xpbdSimulationStep(sim, mpm, xpbd, device, xpbd_only=False):
     """
     Integrate particles using XPBD with gravity and handle collisions, sleeping, and swelling.
+    
+    Parameters
+    ----------
+    sim : SimState
+    mpm : MPMState (can be None if xpbd_only=True)
+    xpbd : XPBDState
+    device : str
+    xpbd_only : bool
+        If True, only XPBD particles are updated (MPM frozen). Skips MPM contact 
+        label reset and MPM-XPBD coupling impulses. Used for debris settling phase.
     """
 
     # Build grid
@@ -280,6 +290,18 @@ def xpbdSimulationStep(sim, mpm, xpbd, device):
         ],
         device=device,
     )
+
+    # Reset MPM contact labels before contact detection (if transition lock is enabled)
+    # This sets materialLabel 0 -> 1 for all MPM particles, allowing transition if they're not in contact
+    # The contact kernel will set them back to 0 if they are in contact with XPBD particles
+    # Skip this in xpbd_only mode since MPM is frozen
+    if xpbd.mpm_contact_transition_lock and not xpbd_only:
+        wp.launch(
+            kernel=xpbdRoutines.reset_mpm_contact_labels,
+            dim=sim.nPoints,
+            inputs=[sim.activeLabel, sim.materialLabel],
+            device=device,
+        )
 
     # XPBD iterations (contacts)
     for _ in range(xpbd.xpbd_iterations):
@@ -309,6 +331,8 @@ def xpbdSimulationStep(sim, mpm, xpbd, device):
         )
 
         # Particle-particle contacts
+        # In xpbd_only mode, disable mpm_contact_transition_lock since MPM is frozen
+        contact_lock = xpbd.mpm_contact_transition_lock if not xpbd_only else 0
         wp.launch(
             kernel=xpbdRoutines.my_solve_particle_particle_contacts,
             dim=sim.nPoints,
@@ -327,6 +351,7 @@ def xpbdSimulationStep(sim, mpm, xpbd, device):
                 xpbd.max_radius,
                 sim.dtxpbd,
                 xpbd.xpbd_relaxation,
+                contact_lock,
             ],
             outputs=[xpbd.particle_delta],
             device=device,
@@ -356,7 +381,9 @@ def xpbdSimulationStep(sim, mpm, xpbd, device):
         wp.copy(xpbd.particle_v_integrated, xpbd.particle_v_deltaInt)
         wp.copy(xpbd.particle_x_integrated, xpbd.particle_x_deltaInt)
 
-    # Sleep particles & path integral
+    # Sleep particles & path integral (also counts sleeping XPBD particles)
+    sim.numTotalXPBD.zero_()
+    sim.numSleepingXPBD.zero_()
     wp.launch(
         kernel=xpbdRoutines.sleepParticles, 
         dim=sim.nPoints, 
@@ -368,13 +395,18 @@ def xpbdSimulationStep(sim, mpm, xpbd, device):
             sim.particle_x,
             xpbd.particle_x_integrated,
             xpbd.particle_cumDist_xpbd,
-            sim.dtxpbd
+            sim.dtxpbd,
+            sim.numTotalXPBD,
+            sim.numSleepingXPBD
         ], 
         device=device
     )
+    
+    # Apply MPM contact impulses (always run to reset MPM positions, but skip velocity change in xpbd_only mode)
     # Store velocity before contact impulse for C/F update
     wp.copy(xpbd.particle_v_before_contact, sim.particle_v)
     
+    xpbd_only_flag = 1 if xpbd_only else 0
     wp.launch(
         kernel=xpbdRoutines.apply_mpm_contact_impulses,
         dim=sim.nPoints,
@@ -388,6 +420,7 @@ def xpbdSimulationStep(sim, mpm, xpbd, device):
             sim.dtxpbd,
             xpbd.particle_v_max,
             xpbd.xpbd_mpm_coupling_strength,  # Coupling parameter
+            xpbd_only_flag,  # If 1, only reset position, don't change velocity
         ],
         outputs=[xpbd.particle_v_integrated],  # Update velocities only
         device=device,
