@@ -2,4 +2,3 @@ read drawschedules properly
 track damage by kernel averaging
 track vx, vy, vz by sleep displacement calc kernel (like fs5)
 implement velocity bcs by txt file containing t1, t2, x1, x2, y1, y2, z1, z2, vx, vy, vz
-restart protocols

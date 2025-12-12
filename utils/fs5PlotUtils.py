@@ -880,3 +880,84 @@ def save_mpm(
         restart_data=restart_data
     )
 
+
+def open_paraview_with_vtp_series(output_folder):
+    """
+    Open ParaView and load the VTP particle time series from the output folder.
+    
+    Args:
+        output_folder: Path to the folder containing *_particles.vtp files
+    """
+    import subprocess
+    import glob
+    import os
+    
+    # Find all particle VTP files
+    vtp_pattern = os.path.join(output_folder, "*_particles.vtp")
+    vtp_files = sorted(glob.glob(vtp_pattern))
+    
+    if not vtp_files:
+        print(f"Warning: No VTP particle files found in {output_folder}")
+        return False
+    
+    if len(vtp_files) < 2:
+        print(f"Warning: Only {len(vtp_files)} VTP file found. Need at least 2 for a time series.")
+        print(f"VTP files are located at: {output_folder}")
+        return False
+    
+    print(f"Found {len(vtp_files)} VTP particle files in {output_folder}")
+    
+    # ParaView can load a time series by opening any file in the series
+    # It auto-detects the pattern and loads all files
+    first_file = vtp_files[0]
+    
+    # Try to find ParaView executable
+    paraview_candidates = [
+        "paraview",  # If in PATH
+        r"C:\Program Files\ParaView 5.12.0\bin\paraview.exe",
+        r"C:\Program Files\ParaView 5.11.2\bin\paraview.exe",
+        r"C:\Program Files\ParaView 5.11.1\bin\paraview.exe",
+        r"C:\Program Files\ParaView 5.11.0\bin\paraview.exe",
+        r"C:\Program Files\ParaView 5.10.1\bin\paraview.exe",
+        r"C:\Program Files (x86)\ParaView 5.12.0\bin\paraview.exe",
+        r"C:\Program Files (x86)\ParaView 5.11.2\bin\paraview.exe",
+    ]
+    
+    paraview_exe = None
+    for candidate in paraview_candidates:
+        # Check if it's in PATH or exists as a file
+        if os.path.isfile(candidate):
+            paraview_exe = candidate
+            break
+        # Try running it to see if it's in PATH
+        try:
+            result = subprocess.run([candidate, "--version"], 
+                                    capture_output=True, timeout=5)
+            if result.returncode == 0:
+                paraview_exe = candidate
+                break
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            continue
+    
+    if paraview_exe is None:
+        print("Warning: Could not find ParaView executable.")
+        print("Please install ParaView or add it to your PATH.")
+        print(f"VTP files are located at: {output_folder}")
+        print(f"First file: {first_file}")
+        return False
+    
+    print(f"Opening ParaView: {paraview_exe}")
+    print(f"Loading file: {first_file}")
+    
+    # Launch ParaView with the first file (it will auto-detect the series)
+    # Use Popen to not block the Python process
+    try:
+        subprocess.Popen([paraview_exe, first_file])
+        print("ParaView launched successfully.")
+        print("Tip: In ParaView, use the 'Play' button or animation controls to view the time series.")
+        return True
+    except Exception as e:
+        print(f"Error launching ParaView: {e}")
+        print(f"VTP files are located at: {output_folder}")
+        return False
+

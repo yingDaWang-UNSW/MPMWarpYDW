@@ -36,15 +36,15 @@ def get_args():
     parser.add_argument("--update_cov", type=int, default=1, help="Update covariance in G2P")
 
     # Rendering & saving
-    parser.add_argument("--render", type=int, default=0, help="Enable rendering")
-    parser.add_argument("--render_backend", type=str, default="opengl", choices=["opengl", "usd"], 
-                        help="Rendering backend: 'opengl' for interactive viewer, 'usd' for GPU-direct USD export")
+    parser.add_argument("--render", type=int, default=0, help="Enable OpenGL rendering")
     parser.add_argument("--render_interval", type=float, default=0.1, help="Simulation time interval (seconds) between renders")
     parser.add_argument("--color_mode", type=str, default="effective_ys", help="Color mode for rendering")
     parser.add_argument("--saveFlag", type=int, default=0, help="Enable saving simulation results")
     parser.add_argument("--outputFolder", type=str, default="./output/", help="Output folder for simulation results")
     parser.add_argument("--restart", type=str, default=None, 
                         help="Path to VTP file from which to restart simulation. Must be a bigstep-end save.")
+    parser.add_argument("--open_paraview", type=int, default=0, 
+                        help="Open ParaView with VTP time series after simulation completes (1=yes, 0=no)")
 
     # Domain & grid
     parser.add_argument("--domainFile", type=str, default="./exampleDomains/annular_arch_particles.h5", 

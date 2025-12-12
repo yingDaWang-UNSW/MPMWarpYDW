@@ -565,49 +565,33 @@ if args.restart is not None:
 
 # ========== Renderer Initialization ==========
 if sim.render:
-    if args.render_backend == "usd":
-        # USD renderer - GPU-direct rendering with zero CPU transfers
-        from utils import usdRenderer
-        usd_output_path = f"{sim.outputFolder}/usd"
-        renderer = usdRenderer.WarpUSDRenderer(
-            output_path=usd_output_path,
-            fps=60,
-            up_axis="Z"
-        )
-        print(f"Initialized USD renderer: {usd_output_path}")
-        maxStress = 0.0
-        maxStrain = 0.0
-        
-    elif args.render_backend == "opengl":
-        # OpenGL renderer - interactive real-time viewer
-        renderer = fs5RendererCore.OpenGLRenderer(        
-            title=f"MPM",
-            scaling=1.0,
-            fps=60,
-            up_axis="z",
-            screen_width=1024,
-            screen_height=768,
-            near_plane=0.01,
-            far_plane=10000,
-            camera_fov=75.0,
-            background_color=(0,0,0),
-            draw_grid=True,
-            draw_sky=False,
-            draw_axis=True,
-            show_info=True,
-            render_wireframe=False,
-            axis_scale=1.0,
-            vsync=False,
-            headless=False,
-            enable_backface_culling=True
-        )
-        renderer._camera_speed = 0.5
-        # orient the renderer to look at the centroid of the particles
-        renderer = fs5PlotUtils.look_at_centroid(x, renderer, renderer.camera_fov)
-        maxStress = 0.0
-        maxStrain = 0.0
-    else:
-        raise ValueError(f"Unknown render_backend: {args.render_backend}")
+    # OpenGL renderer - interactive real-time viewer
+    renderer = fs5RendererCore.OpenGLRenderer(        
+        title=f"MPM",
+        scaling=1.0,
+        fps=60,
+        up_axis="z",
+        screen_width=1024,
+        screen_height=768,
+        near_plane=0.01,
+        far_plane=10000,
+        camera_fov=75.0,
+        background_color=(0,0,0),
+        draw_grid=True,
+        draw_sky=False,
+        draw_axis=True,
+        show_info=True,
+        render_wireframe=False,
+        axis_scale=1.0,
+        vsync=False,
+        headless=False,
+        enable_backface_culling=True
+    )
+    renderer._camera_speed = 0.5
+    # orient the renderer to look at the centroid of the particles
+    renderer = fs5PlotUtils.look_at_centroid(x, renderer, renderer.camera_fov)
+    maxStress = 0.0
+    maxStrain = 0.0
 
 # ========== Helper function for render/save ==========
 def check_render_save(sim, mpm, xpbd, args, bigStep, counter, nextRenderTime, dt_tolerance, renderer=None, maxStress=None, force=False, is_bigstep_end=False):
@@ -621,11 +605,7 @@ def check_render_save(sim, mpm, xpbd, args, bigStep, counter, nextRenderTime, dt
     
     if shouldRenderSave:
         if sim.render:
-            if args.render_backend == "usd":
-                from utils import usdRenderer
-                maxStress = usdRenderer.render_mpm_usd(renderer, sim, mpm, bigStep, counter, maxStress=maxStress)
-            else:  # opengl
-                maxStress = fs5PlotUtils.render_mpm(renderer, sim, mpm, bigStep, counter, maxStress=maxStress)
+            maxStress = fs5PlotUtils.render_mpm(renderer, sim, mpm, bigStep, counter, maxStress=maxStress)
         
         if sim.saveFlag:
             fs5PlotUtils.save_mpm(sim, mpm, bigStep, counter, 
@@ -841,7 +821,10 @@ for bigStep in range(restart_bigStep, sim.bigSteps):
         device=device
     )
 
-# ========== Finalize Renderer ==========
-if sim.render and args.render_backend == "usd":
-    renderer.finalize()
-    print(f"USD rendering complete. View with: usdview {renderer.usd_file}")
+# ========== Finalize Simulation ==========
+print(f"\nSimulation complete.")
+print(f"Total time: {time.time() - startTime:.2f} seconds")
+
+# Auto-open ParaView if requested
+if args.open_paraview:
+    fs5PlotUtils.open_paraview_with_vtp_series(sim.outputFolder)
