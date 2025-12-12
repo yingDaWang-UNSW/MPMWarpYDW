@@ -1,0 +1,73 @@
+{
+  "_comment": "Dynamic Benchmark - Strong block impacting weak base",
+  "_comment2": "200×200×50m weak base (z=0-50), 50×50×50m strong block (z=100-150, centered)",
+  "_comment3": "Block falls under gravity and impacts base, causing local yielding → XPBD transition",
+  
+  "dt": 0,
+  "dtxpbd": 0.01,
+  "bigStepDuration": 10.0,
+  "xpbdOnlyDuration": 0.0,
+  "bigSteps": 3,
+  "residualThreshold": 1e-7,
+  "damage_stall_threshold": 0,
+  "damage_stall_steps": 100,
+  "xpbd_sleep_termination_ratio": 0.95,
+  
+  "rpic_damping": 0,
+  "grid_v_damping_scale": 1,
+  "update_cov": 1,
+  
+  "render": 1,
+  "render_backend": "opengl",
+  "render_interval": 0.1,
+  "color_mode": "effective_ys",
+  "saveFlag": 1,
+  "outputFolder": "./benchmarks/dynamicBenchmark/output/",
+  
+  "domainFile": "./benchmarks/dynamicBenchmark/dynamic_domain.h5",
+  "grid_padding": 15,
+  "grid_particle_spacing_scale": 2.0,
+  "boundary_padding_mask": "111101",
+  
+  "density": 2500.0,
+  "E": 1e8,
+  "nu": 0.2,
+  "constitutive_model": 1,
+  "ys": 1e5,
+  "alpha": 0.3,
+  "hardening": 0.0,
+  "softening": 0.2,
+  "eta_shear": 1e5,
+  "eta_bulk": 1e5,
+  "volumetric_locking_correction": 0,
+  
+  "gravity": -9.81,
+  "K0": 0.0,
+  "z_top": null,
+  "initialise_geostatic": 0,
+  "gravity_pulse_factor": 1.0,
+  "gravity_pulse_duration": 0.0,
+  
+  "boundaryCondition": "friction",
+  "boundFriction": 0,
+  "boundRestitution": 0,
+  "eff": 0.0,
+  "strainCriteria": 0.01,
+  
+  "xpbd_relaxation": 1.0,
+  "xpbd_mpm_coupling_strength": 0.25,
+  "xpbd_deactivation_z_datum": null,
+  "mpm_contact_transition_lock": 0,
+  "dynamicParticleFriction": 0.05,
+  "staticVelocityThreshold": 1e-5,
+  "staticParticleFriction": 0.1,
+  "xpbd_iterations": 4,
+  "particle_cohesion": 0.0,
+  "sleepThreshold": 0.5,
+  
+  "swellingRatio": 0.2,
+  "swellingActivationFactor": 1.0,
+  "swellingMaxFactor": 2.0,
+  
+  "particle_v_max": 1000.0
+}

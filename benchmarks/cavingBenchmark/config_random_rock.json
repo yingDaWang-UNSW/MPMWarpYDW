@@ -46,7 +46,7 @@
   "z_top": null,
   "initialise_geostatic": 1,
   "gravity_pulse_factor": 2,
-  "gravity_pulse_steps": 1000,
+  "gravity_pulse_duration": 1,
   
   "boundaryCondition": "friction",
   "boundFriction": 0.4,

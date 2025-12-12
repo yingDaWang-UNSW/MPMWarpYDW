@@ -249,6 +249,187 @@ import vtk
 from vtk.util import numpy_support
 import os
 
+
+def load_restart_from_vtp(vtp_path):
+    """
+    Load restart data from a VTP file saved at end of bigstep.
+    
+    Parameters
+    ----------
+    vtp_path : str
+        Path to the VTP file containing restart data
+    
+    Returns
+    -------
+    dict
+        Dictionary containing all restart data needed to continue simulation:
+        - particle_x: (N, 3) positions
+        - particle_v: (N, 3) velocities
+        - particle_radius: (N,) radii
+        - particle_F: (N, 3, 3) deformation gradient
+        - particle_C: (N, 3, 3) APIC affine matrix
+        - particle_stress: (N, 3, 3) stress tensor
+        - particle_damage: (N,) damage values
+        - particle_accumulated_strain: (N,) accumulated plastic strain
+        - materialLabel: (N,) material labels (0,1=MPM, 2=XPBD)
+        - activeLabel: (N,) active labels
+        - ys: (N,) current yield stress
+        - ys_base: (N,) base yield stress
+        - mu, lam, bulk, alpha, hardening, softening, eta_shear, eta_bulk, strainCriteria: (N,) material properties
+        - particle_vol, particle_mass, particle_density: (N,) physical properties
+        - particle_x_initial_xpbd: (N, 3) XPBD initial positions
+        - particle_cumDist_xpbd: (N,) XPBD cumulative distance
+        - sim_time: float, simulation time
+        - bigStep: int, completed bigstep number
+        - dx: float, grid spacing
+    """
+    print(f"\n{'='*60}")
+    print(f"LOADING RESTART DATA FROM: {vtp_path}")
+    print(f"{'='*60}")
+    
+    reader = vtk.vtkXMLPolyDataReader()
+    reader.SetFileName(vtp_path)
+    reader.Update()
+    polydata = reader.GetOutput()
+    
+    if polydata is None or polydata.GetNumberOfPoints() == 0:
+        raise ValueError(f"Failed to read VTP file or file is empty: {vtp_path}")
+    
+    nPoints = polydata.GetNumberOfPoints()
+    print(f"  Number of particles: {nPoints}")
+    
+    restart_data = {}
+    
+    # === Load particle positions ===
+    points = polydata.GetPoints()
+    positions = np.zeros((nPoints, 3), dtype=np.float32)
+    for i in range(nPoints):
+        positions[i] = points.GetPoint(i)
+    restart_data['particle_x'] = positions
+    
+    # === Load point data arrays ===
+    point_data = polydata.GetPointData()
+    
+    def get_array(name, components=1, required=True):
+        arr = point_data.GetArray(name)
+        if arr is None:
+            if required:
+                raise ValueError(f"Required array '{name}' not found in VTP file")
+            return None
+        data = numpy_support.vtk_to_numpy(arr)
+        if components > 1 and data.ndim == 1:
+            data = data.reshape(-1, components)
+        return data
+    
+    # Basic visualization arrays (always present)
+    restart_data['particle_radius'] = get_array("radius")
+    restart_data['particle_v'] = get_array("velocity", components=3, required=False)
+    if restart_data['particle_v'] is None:
+        restart_data['particle_v'] = np.zeros((nPoints, 3), dtype=np.float32)
+    
+    restart_data['ys'] = get_array("yield_stress", required=False)
+    restart_data['particle_damage'] = get_array("damage", required=False)
+    restart_data['materialLabel'] = get_array("material_label", required=False)
+    restart_data['activeLabel'] = get_array("active_label", required=False)
+    
+    # Stress tensor (6 symmetric components → 3x3)
+    stress_6 = get_array("stress_tensor", components=6, required=False)
+    if stress_6 is not None:
+        restart_data['particle_stress'] = np.zeros((nPoints, 3, 3), dtype=np.float32)
+        restart_data['particle_stress'][:, 0, 0] = stress_6[:, 0]  # xx
+        restart_data['particle_stress'][:, 1, 1] = stress_6[:, 1]  # yy
+        restart_data['particle_stress'][:, 2, 2] = stress_6[:, 2]  # zz
+        restart_data['particle_stress'][:, 0, 1] = stress_6[:, 3]  # xy
+        restart_data['particle_stress'][:, 1, 0] = stress_6[:, 3]  # xy (symmetric)
+        restart_data['particle_stress'][:, 0, 2] = stress_6[:, 4]  # xz
+        restart_data['particle_stress'][:, 2, 0] = stress_6[:, 4]  # xz (symmetric)
+        restart_data['particle_stress'][:, 1, 2] = stress_6[:, 5]  # yz
+        restart_data['particle_stress'][:, 2, 1] = stress_6[:, 5]  # yz (symmetric)
+    
+    # === Restart-specific arrays (only in checkpoint files) ===
+    # Deformation gradient F (9 components → 3x3)
+    F_flat = get_array("deformation_gradient_F", components=9, required=False)
+    if F_flat is not None:
+        restart_data['particle_F'] = F_flat.reshape(-1, 3, 3)
+        print(f"  Loaded deformation gradient F")
+    else:
+        print(f"  WARNING: No deformation gradient F found - will initialize to identity")
+        restart_data['particle_F'] = np.tile(np.eye(3, dtype=np.float32), (nPoints, 1, 1))
+    
+    # APIC affine matrix C
+    C_flat = get_array("apic_C", components=9, required=False)
+    if C_flat is not None:
+        restart_data['particle_C'] = C_flat.reshape(-1, 3, 3)
+        print(f"  Loaded APIC affine matrix C")
+    else:
+        restart_data['particle_C'] = np.zeros((nPoints, 3, 3), dtype=np.float32)
+    
+    # Accumulated strain
+    restart_data['particle_accumulated_strain'] = get_array("accumulated_strain", required=False)
+    if restart_data['particle_accumulated_strain'] is None:
+        restart_data['particle_accumulated_strain'] = np.zeros(nPoints, dtype=np.float32)
+    
+    # Base yield stress
+    restart_data['ys_base'] = get_array("yield_stress_base", required=False)
+    if restart_data['ys_base'] is None and restart_data['ys'] is not None:
+        restart_data['ys_base'] = restart_data['ys'].copy()
+    
+    # Material properties
+    for prop_name in ['mu', 'lam', 'bulk', 'alpha', 'hardening', 'softening', 
+                      'eta_shear', 'eta_bulk', 'strainCriteria']:
+        arr = get_array(f"mpm_{prop_name}", required=False)
+        if arr is not None:
+            restart_data[prop_name] = arr
+            print(f"  Loaded {prop_name}")
+    
+    # Physical properties
+    restart_data['particle_vol'] = get_array("particle_volume", required=False)
+    restart_data['particle_mass'] = get_array("particle_mass", required=False)
+    restart_data['particle_density'] = get_array("particle_density", required=False)
+    
+    # XPBD state
+    xpbd_init = get_array("xpbd_initial_position", components=3, required=False)
+    if xpbd_init is not None:
+        restart_data['particle_x_initial_xpbd'] = xpbd_init
+        print(f"  Loaded XPBD initial positions")
+    
+    restart_data['particle_cumDist_xpbd'] = get_array("xpbd_cumulative_distance", required=False)
+    
+    # === Load field data (metadata) ===
+    field_data = polydata.GetFieldData()
+    
+    def get_field_scalar(name, default=None):
+        arr = field_data.GetArray(name)
+        if arr is None:
+            return default
+        return arr.GetValue(0)
+    
+    restart_data['sim_time'] = get_field_scalar("sim_time", 0.0)
+    restart_data['bigStep'] = int(get_field_scalar("bigStep", 0))
+    restart_data['dx'] = get_field_scalar("dx", None)
+    
+    print(f"\n  Restart state:")
+    print(f"    Simulation time: {restart_data['sim_time']:.4f}s")
+    print(f"    Completed bigStep: {restart_data['bigStep']}")
+    if restart_data['dx'] is not None:
+        print(f"    Grid spacing (dx): {restart_data['dx']:.4f}m")
+    
+    # Count material states
+    if restart_data['materialLabel'] is not None:
+        n_mpm_locked = np.sum(restart_data['materialLabel'] == 0)
+        n_mpm_trans = np.sum(restart_data['materialLabel'] == 1)
+        n_xpbd = np.sum(restart_data['materialLabel'] == 2)
+        print(f"    MPM (locked): {n_mpm_locked}, MPM (transitionable): {n_mpm_trans}, XPBD: {n_xpbd}")
+    
+    if restart_data['particle_damage'] is not None:
+        mean_damage = np.mean(restart_data['particle_damage'])
+        max_damage = np.max(restart_data['particle_damage'])
+        print(f"    Mean damage: {mean_damage:.6f}, Max damage: {max_damage:.6f}")
+    
+    print(f"{'='*60}\n")
+    
+    return restart_data
+
 def save_grid_and_particles_vti_vtp(
     output_prefix,
     grid_mass,           # shape (nx, ny, nz)
@@ -264,7 +445,9 @@ def save_grid_and_particles_vti_vtp(
     particle_von_mises=None,     # shape (N,)
     particle_stress_tensor=None,  # shape (N, 3, 3) or (N, 9)
     particle_active_label=None,   # shape (N,) - active/inactive flag
-    particle_material_label=None  # shape (N,) - 0=MPM(locked), 1=MPM(transitionable), 2=XPBD
+    particle_material_label=None,  # shape (N,) - 0=MPM(locked), 1=MPM(transitionable), 2=XPBD
+    # === Restart fields (only saved for bigstep-end checkpoints) ===
+    restart_data=None,  # dict with all restart fields, if None only saves visualization data
 ):
     os.makedirs(os.path.dirname(output_prefix), exist_ok=True)
 
@@ -371,6 +554,89 @@ def save_grid_and_particles_vti_vtp(
         vtk_material_label = numpy_support.numpy_to_vtk(particle_material_label.astype(np.int32))
         vtk_material_label.SetName("material_label")
         polydata.GetPointData().AddArray(vtk_material_label)
+
+    # === Add restart data if provided (for bigstep-end checkpoints) ===
+    if restart_data is not None:
+        # Simulation metadata (stored as field data)
+        field_data = polydata.GetFieldData()
+        
+        # Scalar metadata
+        for key in ['sim_time', 'bigStep', 'dx']:
+            if key in restart_data:
+                arr = vtk.vtkFloatArray()
+                arr.SetName(key)
+                arr.SetNumberOfTuples(1)
+                arr.SetValue(0, float(restart_data[key]))
+                field_data.AddArray(arr)
+        
+        # Deformation gradient F (9 components per particle, stored as 3x3 flattened)
+        if 'particle_F' in restart_data:
+            F = restart_data['particle_F']  # (N, 3, 3)
+            F_flat = F.reshape(-1, 9).astype(np.float32)
+            vtk_F = numpy_support.numpy_to_vtk(F_flat)
+            vtk_F.SetName("deformation_gradient_F")
+            vtk_F.SetNumberOfComponents(9)
+            polydata.GetPointData().AddArray(vtk_F)
+        
+        # APIC affine matrix C (9 components per particle)
+        if 'particle_C' in restart_data:
+            C = restart_data['particle_C']  # (N, 3, 3)
+            C_flat = C.reshape(-1, 9).astype(np.float32)
+            vtk_C = numpy_support.numpy_to_vtk(C_flat)
+            vtk_C.SetName("apic_C")
+            vtk_C.SetNumberOfComponents(9)
+            polydata.GetPointData().AddArray(vtk_C)
+        
+        # Accumulated plastic strain
+        if 'particle_accumulated_strain' in restart_data:
+            vtk_acc_strain = numpy_support.numpy_to_vtk(restart_data['particle_accumulated_strain'].astype(np.float32))
+            vtk_acc_strain.SetName("accumulated_strain")
+            polydata.GetPointData().AddArray(vtk_acc_strain)
+        
+        # Base yield stress (before creep)
+        if 'ys_base' in restart_data:
+            vtk_ys_base = numpy_support.numpy_to_vtk(restart_data['ys_base'].astype(np.float32))
+            vtk_ys_base.SetName("yield_stress_base")
+            polydata.GetPointData().AddArray(vtk_ys_base)
+        
+        # Material properties that may have evolved
+        for prop_name in ['mu', 'lam', 'bulk', 'alpha', 'hardening', 'softening', 
+                          'eta_shear', 'eta_bulk', 'strainCriteria']:
+            if prop_name in restart_data:
+                vtk_arr = numpy_support.numpy_to_vtk(restart_data[prop_name].astype(np.float32))
+                vtk_arr.SetName(f"mpm_{prop_name}")
+                polydata.GetPointData().AddArray(vtk_arr)
+        
+        # Particle volume and mass (may change with swelling)
+        if 'particle_vol' in restart_data:
+            vtk_vol = numpy_support.numpy_to_vtk(restart_data['particle_vol'].astype(np.float32))
+            vtk_vol.SetName("particle_volume")
+            polydata.GetPointData().AddArray(vtk_vol)
+        
+        if 'particle_mass' in restart_data:
+            vtk_mass = numpy_support.numpy_to_vtk(restart_data['particle_mass'].astype(np.float32))
+            vtk_mass.SetName("particle_mass")
+            polydata.GetPointData().AddArray(vtk_mass)
+        
+        if 'particle_density' in restart_data:
+            vtk_density = numpy_support.numpy_to_vtk(restart_data['particle_density'].astype(np.float32))
+            vtk_density.SetName("particle_density")
+            polydata.GetPointData().AddArray(vtk_density)
+        
+        # XPBD-specific state
+        if 'particle_x_initial_xpbd' in restart_data:
+            xpbd_init = restart_data['particle_x_initial_xpbd']  # (N, 3)
+            vtk_xpbd_init = numpy_support.numpy_to_vtk(xpbd_init.astype(np.float32))
+            vtk_xpbd_init.SetName("xpbd_initial_position")
+            vtk_xpbd_init.SetNumberOfComponents(3)
+            polydata.GetPointData().AddArray(vtk_xpbd_init)
+        
+        if 'particle_cumDist_xpbd' in restart_data:
+            vtk_cumDist = numpy_support.numpy_to_vtk(restart_data['particle_cumDist_xpbd'].astype(np.float32))
+            vtk_cumDist.SetName("xpbd_cumulative_distance")
+            polydata.GetPointData().AddArray(vtk_cumDist)
+        
+        print(f"  (includes restart data for checkpoint)")
 
     writer_vtp = vtk.vtkXMLPolyDataWriter()
     writer_vtp.SetFileName(f"{output_prefix}_particles.vtp")
@@ -520,7 +786,9 @@ def save_mpm(
     sim,
     mpm,
     bigStep,
-    counter
+    counter,
+    include_restart_data=False,
+    xpbd=None
 ):
     """
     Save particle and grid state to VTK files.
@@ -533,6 +801,10 @@ def save_mpm(
         MPM-specific state
     bigStep : int
     counter : int
+    include_restart_data : bool
+        If True, include all data needed for simulation restart (checkpoint)
+    xpbd : XPBDState, optional
+        XPBD state (required if include_restart_data=True)
     """
     # Compute mean stress and von Mises stress
     sigma = mpm.particle_stress.numpy().astype(np.float64)  # (N, 3, 3)
@@ -550,9 +822,47 @@ def save_mpm(
     damage = mpm.particle_damage.numpy()
     effective_ys = (ys - alpha * mean_stress) * (1.0 - damage)
 
+    # Prepare restart data if requested
+    restart_data = None
+    if include_restart_data:
+        restart_data = {
+            # Simulation metadata
+            'sim_time': sim.t,
+            'bigStep': bigStep,
+            'dx': sim.dx,
+            
+            # MPM state
+            'particle_F': mpm.particle_F.numpy(),
+            'particle_C': mpm.particle_C.numpy(),
+            'particle_accumulated_strain': mpm.particle_accumulated_strain.numpy(),
+            'ys_base': mpm.ys_base.numpy(),
+            
+            # Material properties
+            'mu': mpm.mu.numpy(),
+            'lam': mpm.lam.numpy(),
+            'bulk': mpm.bulk.numpy(),
+            'alpha': mpm.alpha.numpy(),
+            'hardening': mpm.hardening.numpy(),
+            'softening': mpm.softening.numpy(),
+            'eta_shear': mpm.eta_shear.numpy(),
+            'eta_bulk': mpm.eta_bulk.numpy(),
+            'strainCriteria': mpm.strainCriteria.numpy(),
+            
+            # Physical properties
+            'particle_vol': sim.particle_vol.numpy(),
+            'particle_mass': sim.particle_mass.numpy(),
+            'particle_density': sim.particle_density.numpy(),
+        }
+        
+        # XPBD state (if provided)
+        if xpbd is not None:
+            restart_data['particle_x_initial_xpbd'] = xpbd.particle_x_initial_xpbd.numpy()
+            restart_data['particle_cumDist_xpbd'] = xpbd.particle_cumDist_xpbd.numpy()
+
     # --- Save if requested ---
+    # Filename format: sim_step_BBBB_CCCCCC_tTTTTTTTT where B=bigStep, C=counter, T=time in seconds (8 digits, 4 decimals)
     save_grid_and_particles_vti_vtp(
-        output_prefix=f"{sim.outputFolder}/sim_step_{bigStep:04d}{counter:06d}",
+        output_prefix=f"{sim.outputFolder}/sim_step_{bigStep:04d}{counter:06d}{int(np.ceil(sim.t*1e8)):016d}",
         grid_mass=mpm.grid_m.numpy(),
         minBounds=sim.minBounds,
         dx=sim.dx,
@@ -566,6 +876,7 @@ def save_mpm(
         particle_von_mises=von_mises,
         particle_stress_tensor=sigma,  # Add full stress tensor
         particle_active_label=sim.activeLabel.numpy(),
-        particle_material_label=sim.materialLabel.numpy()
+        particle_material_label=sim.materialLabel.numpy(),
+        restart_data=restart_data
     )
 

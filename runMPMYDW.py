@@ -482,6 +482,87 @@ print(f'XPBD domain: X=[{xpbd.minBoundsXPBD[0]:.2f}, {xpbd.maxBoundsXPBD[0]:.2f}
       f'Y=[{xpbd.minBoundsXPBD[1]:.2f}, {xpbd.maxBoundsXPBD[1]:.2f}], '
       f'Z=[{xpbd.minBoundsXPBD[2]:.2f}, {xpbd.maxBoundsXPBD[2]:.2f}]')
 
+# ========== Restart Loading (if specified) ==========
+restart_bigStep = 0  # Starting bigStep index (0 unless restarting)
+if args.restart is not None:
+    print(f"\n{'='*60}")
+    print("RESTART MODE")
+    print(f"{'='*60}")
+    
+    # Load restart data from VTP file
+    restart_data = fs5PlotUtils.load_restart_from_vtp(args.restart)
+    
+    # Validate particle count matches
+    if len(restart_data['particle_x']) != sim.nPoints:
+        raise ValueError(f"Restart file has {len(restart_data['particle_x'])} particles, "
+                        f"but domain has {sim.nPoints}. Cannot restart with different particle count.")
+    
+    # Set starting bigStep (restart starts at NEXT bigStep)
+    restart_bigStep = restart_data['bigStep'] + 1
+    print(f"  Will start from bigStep {restart_bigStep} (after completing {restart_data['bigStep']})")
+    
+    # Restore simulation time
+    sim.t = restart_data['sim_time']
+    print(f"  Simulation time restored to {sim.t:.4f}s")
+    
+    # Restore particle positions and velocities
+    sim.particle_x = wp.array(restart_data['particle_x'], dtype=wp.vec3, device=device)
+    sim.particle_v = wp.array(restart_data['particle_v'], dtype=wp.vec3, device=device)
+    
+    # Restore particle labels
+    if restart_data['materialLabel'] is not None:
+        sim.materialLabel = wp.array(restart_data['materialLabel'], dtype=wp.int32, device=device)
+    if restart_data['activeLabel'] is not None:
+        sim.activeLabel = wp.array(restart_data['activeLabel'], dtype=wp.int32, device=device)
+    
+    # Restore MPM state
+    mpm.particle_F = wp.array(restart_data['particle_F'], dtype=wp.mat33, device=device)
+    mpm.particle_C = wp.array(restart_data['particle_C'], dtype=wp.mat33, device=device)
+    
+    # Copy F to F_trial for first step of restart
+    wp.launch(kernel=mpmRoutines.set_mat33_to_copy,
+              dim=sim.nPoints,
+              inputs=[mpm.particle_F, mpm.particle_F_trial],
+              device=device)
+    
+    if restart_data['particle_accumulated_strain'] is not None:
+        mpm.particle_accumulated_strain = wp.array(restart_data['particle_accumulated_strain'], dtype=float, device=device)
+    if restart_data['particle_damage'] is not None:
+        mpm.particle_damage = wp.array(restart_data['particle_damage'], dtype=float, device=device)
+    if restart_data.get('particle_stress') is not None:
+        mpm.particle_stress = wp.array(restart_data['particle_stress'], dtype=wp.mat33, device=device)
+    
+    # Restore yield stress
+    if restart_data['ys'] is not None:
+        mpm.ys = wp.array(restart_data['ys'], dtype=wp.float32, device=device)
+    if restart_data['ys_base'] is not None:
+        mpm.ys_base = wp.array(restart_data['ys_base'], dtype=wp.float32, device=device)
+    
+    # Restore material properties if they were saved
+    for prop_name in ['mu', 'lam', 'bulk', 'alpha', 'hardening', 'softening', 
+                      'eta_shear', 'eta_bulk', 'strainCriteria']:
+        if prop_name in restart_data and restart_data[prop_name] is not None:
+            setattr(mpm, prop_name, wp.array(restart_data[prop_name], dtype=wp.float32, device=device))
+    
+    # Restore physical properties
+    if restart_data.get('particle_vol') is not None:
+        sim.particle_vol = wp.array(restart_data['particle_vol'], dtype=float, device=device)
+    if restart_data.get('particle_mass') is not None:
+        sim.particle_mass = wp.array(restart_data['particle_mass'], dtype=float, device=device)
+    if restart_data.get('particle_density') is not None:
+        sim.particle_density = wp.array(restart_data['particle_density'], dtype=wp.float32, device=device)
+    if restart_data.get('particle_radius') is not None:
+        sim.particle_radius = wp.array(restart_data['particle_radius'], dtype=float, device=device)
+    
+    # Restore XPBD state
+    if restart_data.get('particle_x_initial_xpbd') is not None:
+        xpbd.particle_x_initial_xpbd = wp.array(restart_data['particle_x_initial_xpbd'], dtype=wp.vec3, device=device)
+    if restart_data.get('particle_cumDist_xpbd') is not None:
+        xpbd.particle_cumDist_xpbd = wp.array(restart_data['particle_cumDist_xpbd'], dtype=float, device=device)
+    
+    print(f"  Restart complete - state restored from checkpoint")
+    print(f"{'='*60}\n")
+
 # ========== Renderer Initialization ==========
 if sim.render:
     if args.render_backend == "usd":
@@ -529,11 +610,12 @@ if sim.render:
         raise ValueError(f"Unknown render_backend: {args.render_backend}")
 
 # ========== Helper function for render/save ==========
-def check_render_save(sim, mpm, args, bigStep, counter, nextRenderTime, dt_tolerance, renderer=None, maxStress=None, force=False):
+def check_render_save(sim, mpm, xpbd, args, bigStep, counter, nextRenderTime, dt_tolerance, renderer=None, maxStress=None, force=False, is_bigstep_end=False):
     """Check if we should render/save and do so. Returns (nextRenderTime, maxStress).
     
     Args:
         force: If True, force render/save regardless of time (for early termination)
+        is_bigstep_end: If True, include restart data in the save (checkpoint)
     """
     shouldRenderSave = force or sim.t >= (nextRenderTime - 0.5 * dt_tolerance)
     
@@ -546,7 +628,9 @@ def check_render_save(sim, mpm, args, bigStep, counter, nextRenderTime, dt_toler
                 maxStress = fs5PlotUtils.render_mpm(renderer, sim, mpm, bigStep, counter, maxStress=maxStress)
         
         if sim.saveFlag:
-            fs5PlotUtils.save_mpm(sim, mpm, bigStep, counter)
+            fs5PlotUtils.save_mpm(sim, mpm, bigStep, counter, 
+                                  include_restart_data=is_bigstep_end, 
+                                  xpbd=xpbd if is_bigstep_end else None)
         if not force:
             nextRenderTime += args.render_interval
     
@@ -554,26 +638,28 @@ def check_render_save(sim, mpm, args, bigStep, counter, nextRenderTime, dt_toler
 
 # ========== Main Simulation Loop ==========
 startTime=time.time()
-nextRenderTime = args.render_interval  # Next simulation time to render/save
+nextRenderTime = sim.t + args.render_interval  # Next simulation time to render/save (offset by current time for restart)
 
 # Store base gravity for pulse restoration
 base_gravity = sim.gravity
 
-for bigStep in range(0, sim.bigSteps):
+for bigStep in range(restart_bigStep, sim.bigSteps):
     print(f"Starting big step {bigStep+1} of {sim.bigSteps}, meanys: {np.mean(mpm.ys.numpy()):.2f}")
     
     # ========== PHASE 1: Combined MPM+XPBD ==========
     print(f"  Phase 1: Combined MPM+XPBD (max {sim.bigStepDuration:.1f}s)")
     
     # ========== Apply gravity pulse at start of big step ==========
-    if args.gravity_pulse_factor != 1.0 and args.gravity_pulse_steps > 0:
+    # Convert duration to steps
+    gravity_pulse_steps = int(args.gravity_pulse_duration / sim.dt) if args.gravity_pulse_duration > 0 else 0
+    if args.gravity_pulse_factor != 1.0 and gravity_pulse_steps > 0:
         pulse_gravity = wp.vec3(
             base_gravity[0] * args.gravity_pulse_factor,
             base_gravity[1] * args.gravity_pulse_factor,
             base_gravity[2] * args.gravity_pulse_factor
         )
         sim.gravity = pulse_gravity
-        print(f"    Applying gravity pulse: {args.gravity_pulse_factor}x for {args.gravity_pulse_steps} steps")
+        print(f"    Applying gravity pulse: {args.gravity_pulse_factor}x for {args.gravity_pulse_duration}s ({gravity_pulse_steps} steps)")
 
     counter=0
     residualCPU=1e10
@@ -590,7 +676,7 @@ for bigStep in range(0, sim.bigSteps):
         sim.numActiveParticles.zero_()  # reset active particle count at each step
         
         # ========== End gravity pulse after specified steps ==========
-        if counter == args.gravity_pulse_steps and args.gravity_pulse_factor != 1.0:
+        if counter == gravity_pulse_steps and args.gravity_pulse_factor != 1.0 and gravity_pulse_steps > 0:
             sim.gravity = base_gravity
             print(f"    Gravity pulse ended, restored to normal gravity")
         
@@ -644,7 +730,7 @@ for bigStep in range(0, sim.bigSteps):
             print(f"    Early termination: damage stalled for {sim.damage_stall_steps} consecutive steps")
             combined_phase_terminated_early = True
             # Restore gravity if still in pulse mode
-            if counter < args.gravity_pulse_steps and args.gravity_pulse_factor != 1.0:
+            if counter < gravity_pulse_steps and args.gravity_pulse_factor != 1.0:
                 sim.gravity = base_gravity
             break
         
@@ -654,14 +740,14 @@ for bigStep in range(0, sim.bigSteps):
 
         # Render/save if needed
         nextRenderTime, maxStress = check_render_save(
-            sim, mpm, args, bigStep, counter, nextRenderTime, sim.dt,
+            sim, mpm, xpbd, args, bigStep, counter, nextRenderTime, sim.dt,
             renderer=renderer if sim.render else None, maxStress=maxStress if sim.render else None
         )
     
     print(f"  Phase 1 completed after {counter} steps ({counter*sim.dt:.2f}s sim time)")
-    # Force render/save before continuing
+    # Force render/save at end of phase 1 (not yet a checkpoint)
     nextRenderTime, maxStress = check_render_save(
-        sim, mpm, args, bigStep, counter, nextRenderTime, sim.dt,
+        sim, mpm, xpbd, args, bigStep, counter, nextRenderTime, sim.dt,
         renderer=renderer if sim.render else None, maxStress=maxStress if sim.render else None,
         force=True
     )    
@@ -695,7 +781,7 @@ for bigStep in range(0, sim.bigSteps):
                 print(f'    XPBD Step: {xpbd_counter}/{sim.xpbdOnlySteps}, simulationTime: {sim.t:.4f}s, deltaRealTime: +{time.time()-stepStartTime:.4f}s, realTime: {time.time()-startTime:.4f}s, sleeping%: {sleep_pct:.2f}%')
             
             nextRenderTime, maxStress = check_render_save(
-                sim, mpm, args, bigStep, counter, nextRenderTime, sim.dtxpbd,
+                sim, mpm, xpbd, args, bigStep, counter, nextRenderTime, sim.dtxpbd,
                 renderer=renderer if sim.render else None, maxStress=maxStress if sim.render else None
             )
         
@@ -703,13 +789,16 @@ for bigStep in range(0, sim.bigSteps):
             print(f"  Phase 2 terminated early after {xpbd_counter} XPBD steps")
         else:
             print(f"  Phase 2 completed after {xpbd_counter} XPBD steps")
-        # Force render/save before continuing
-        nextRenderTime, maxStress = check_render_save(
-            sim, mpm, args, bigStep, counter, nextRenderTime, sim.dt,
-            renderer=renderer if sim.render else None, maxStress=maxStress if sim.render else None,
-            force=True
-        )    
-    # ========== End of Big Step: Deactivate XPBD particles below datum ==========
+    
+    # ========== End of Big Step: Save checkpoint with restart data ==========
+    print(f"  Saving bigstep checkpoint (includes restart data)")
+    nextRenderTime, maxStress = check_render_save(
+        sim, mpm, xpbd, args, bigStep, counter, nextRenderTime, sim.dt,
+        renderer=renderer if sim.render else None, maxStress=maxStress if sim.render else None,
+        force=True, is_bigstep_end=True
+    )
+    
+    # ========== Deactivate XPBD particles below datum ==========
     # Compute deactivation datum (use args or default to bottom of domain)
     if args.xpbd_deactivation_z_datum is not None:
         z_datum = args.xpbd_deactivation_z_datum

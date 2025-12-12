@@ -13,3 +13,4 @@ benchmarks/spatialBenchmark/output*
 benchmarks/cavingBenchmark/output*
 benchmarks/*/*.h5
 benchmarks/*/*.vtp
+benchmarks/dynamicBenchmark/output*

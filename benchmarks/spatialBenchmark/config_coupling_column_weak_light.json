@@ -20,7 +20,7 @@
   "outputFolder": "./benchmarks/spatialBenchmark/output_coupling_column_weak_light/",
   "domainFile": "./benchmarks/spatialBenchmark/coupling_column_weak_light.h5",
   "grid_padding": 15,
-  "grid_particle_spacing_scale": 4.0,
+  "grid_particle_spacing_scale": 2.0,
   "boundary_padding_mask": "111101",
   
   "density": 2500.0,
