@@ -8,34 +8,26 @@ import numpy as np
 
 
 class SimState:
-    """Global simulation state - variables needed across MPM and XPBD"""
     def __init__(self, args, nPoints, device="cuda:0"):
-        self.device = device
+        """Initialize simulation state."""
         self.nPoints = nPoints
-        
-        # Time stepping
         self.dt = args.dt
         self.dtxpbd = args.dtxpbd
-        self.mpmStepsPerXpbdStep = int(args.dtxpbd / args.dt)
-        
-        # Calculate nSteps from bigStepDuration (time in seconds)
         self.bigStepDuration = args.bigStepDuration
-        self.nSteps = int(args.bigStepDuration / args.dt)
-        
-        # XPBD-only phase parameters
         self.xpbdOnlyDuration = args.xpbdOnlyDuration
-        self.xpbdOnlySteps = int(args.xpbdOnlyDuration / args.dtxpbd) if args.xpbdOnlyDuration > 0 else 0
-        
-        # Early termination based on damage stalling
-        self.damage_stall_threshold = args.damage_stall_threshold
-        self.damage_stall_steps = args.damage_stall_steps
-        
-        # Early termination for XPBD-only phase based on sleeping particles
-        self.xpbd_sleep_termination_ratio = args.xpbd_sleep_termination_ratio
-        
         self.bigSteps = args.bigSteps
+        self.nSteps = int(self.bigStepDuration / self.dt)
+        self.xpbdOnlySteps = int(self.xpbdOnlyDuration / self.dtxpbd) if self.xpbdOnlyDuration > 0 else 0
+        self.mpmStepsPerXpbdStep = int(self.dtxpbd / self.dt)
+        self.t = 0.0
         self.residualThreshold = args.residualThreshold
-        self.t = 0.0  # simulation time
+        
+        # Damage stall termination (time-based)
+        self.damage_stall_threshold = args.damage_stall_threshold
+        self.damage_stall_duration = args.damage_stall_duration  # in seconds, converted to steps at runtime
+        
+        # XPBD sleep termination
+        self.xpbd_sleep_termination_ratio = args.xpbd_sleep_termination_ratio
         
         # Rendering and output
         self.render = args.render
@@ -65,11 +57,15 @@ class SimState:
         
         # Convergence tracking
         self.residual = wp.array([1e10], dtype=float, device=device)
-        self.numActiveParticles = wp.array([0], dtype=wp.int32, device=device)
         
-        # XPBD particle counting for sleep-based early termination
-        self.numTotalXPBD = wp.array([0], dtype=wp.int32, device=device)
-        self.numSleepingXPBD = wp.array([0], dtype=wp.int32, device=device)
+        # Particle tracking arrays (for counting different types)
+        self.numActiveParticles = wp.zeros(shape=1, dtype=int, device=device)
+        self.numTotalXPBD = wp.zeros(shape=1, dtype=int, device=device)
+        self.numSleepingXPBD = wp.zeros(shape=1, dtype=int, device=device)
+        self.numActiveMPM = wp.zeros(shape=1, dtype=int, device=device)
+        self.numActiveXPBD = wp.zeros(shape=1, dtype=int, device=device)
+        self.numInactiveMPM = wp.zeros(shape=1, dtype=int, device=device)
+        self.numInactiveXPBD = wp.zeros(shape=1, dtype=int, device=device)
 
 class MPMState:
     """MPM-specific state variables"""

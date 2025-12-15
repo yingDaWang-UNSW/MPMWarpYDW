@@ -13,17 +13,17 @@
   "bigSteps": 100,
   "residualThreshold": 1e-6,
   "damage_stall_threshold": 1e-6,
-  "damage_stall_steps": 500,
-  
+  "damage_stall_duration": 0.5,
+  "xpbd_sleep_termination_ratio": 0.99,
+
   "rpic_damping": 0.2,
   "grid_v_damping_scale": 0.995,
   "update_cov": 1,
   
   "render": 0,
-  "render_backend": "opengl",
   "render_interval": 15,
   "saveFlag": 1,
-  "outputFolder": "./benchmarks/cavingBenchmark/outputWeak/",
+  "outputFolder": "./benchmarks/cavingBenchmark/outputWeakSeismic/",
   "domainFile": "./benchmarks/cavingBenchmark/random_rock_domain_250x250x250_hole50_weak.h5",
   "grid_padding": 10.0,
   "grid_particle_spacing_scale": 2.0,
@@ -67,7 +67,7 @@
   "xpbd_deactivation_z_datum": 4,
   
   "swellingRatio": 0.2,
-  "swellingActivatioFactor": 2.0,
+  "swellingActivationFactor": 2.0,
   "swellingMaxFactor": 4.0,
   
   "particle_v_max": 10.0,

@@ -118,7 +118,7 @@ print(f"Young's modulus: {E.min()/1e9:.1f} - {E.max()/1e9:.1f} GPa")
 # Yield stress: 10-100 MPa (mean 55 MPa)
 ys_mean = 55e6
 ys_std = 100e6
-ys = create_gaussian_field((nx, ny, nz), ys_mean, ys_std, correlation_length_medium, original_indices)
+ys = create_gaussian_field((nx, ny, nz), ys_mean, ys_std, correlation_length_long, original_indices)
 ys = np.clip(ys, 10e6, 100e6)
 
 # Make yield stress lower closer to the hole (1 order of magnitude reduction at hole surface)

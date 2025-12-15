@@ -517,3 +517,30 @@ def countActiveParticles(
     p = wp.tid()
     if activeLabel[p] == 1:
         wp.atomic_add(sum, 0, 1)
+
+@wp.kernel
+def countParticlesByType(
+    activeLabel: wp.array(dtype=wp.int32),
+    materialLabel: wp.array(dtype=wp.int32),
+    numActiveMPM: wp.array(dtype=int),
+    numActiveXPBD: wp.array(dtype=int),
+    numInactiveMPM: wp.array(dtype=int),
+    numInactiveXPBD: wp.array(dtype=int),
+):
+    """Count particles by type (MPM vs XPBD) and status (active vs inactive/sleeping)."""
+    p = wp.tid()
+    
+    is_active = activeLabel[p] == 1
+    is_xpbd = materialLabel[p] == 2
+    
+    if is_xpbd:
+        if is_active:
+            wp.atomic_add(numActiveXPBD, 0, 1)
+        else:
+            wp.atomic_add(numInactiveXPBD, 0, 1)
+    else:
+        # MPM particles (materialLabel 0 or 1)
+        if is_active:
+            wp.atomic_add(numActiveMPM, 0, 1)
+        else:
+            wp.atomic_add(numInactiveMPM, 0, 1)

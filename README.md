@@ -1,3 +1,5 @@
+```markdown
+// filepath: d:\sourceCodes\MPMWarpYDW\README.md
 # MPMWarpYDW
 
 A GPU-accelerated 3D coupled simulation framework combining the Material Point Method (MPM) with Extended Position Based Dynamics (XPBD) for modeling large deformation, damage, phase transitions, and granular flow in geomaterials.
@@ -9,44 +11,53 @@ This framework simulates the progressive failure and fragmentation of continuum 
 2. **Phase Transition**: Automatically converting failed material points into discrete particles when damage reaches critical values
 3. **XPBD Phase**: Simulating post-failure granular dynamics with particle-particle contacts, friction, and cohesion
 
-The coupling enables seamless simulation of processes like rock avalanches, landslides, and fragmentation under gravity and dynamic loading.
+The coupling enables seamless simulation of processes like rock avalanches, landslides, cave propagation, and fragmentation under gravity and dynamic loading.
 
 ## Key Features
 
 ### Material Point Method (MPM)
-- **Multiplicative elastoplasticity** with logarithmic strain measures
+- **Multiplicative elastoplasticity** with logarithmic strain measures (valid for large deformations)
 - **Dual constitutive models**: 
   - **Von Mises** (pressure-independent, J2 plasticity)
-  - **Drucker-Prager** (pressure-dependent, frictional materials with dilatancy)
-- **Return mapping** with non-associated flow for realistic granular behavior
-- **Damage mechanics** based on accumulated plastic strain
-- **Phase transition** from continuum to discrete particles at critical damage
-- **Kelvin-Voigt viscoelasticity** for rate-dependent behavior
-- **APIC transfer scheme** (Affine Particle-In-Cell) for reduced numerical dissipation
-- **Optional RPIC** (Rotated PIC) for damping control
+  - **Drucker-Prager** (pressure-dependent, frictional materials with non-associated dilatancy)
+- **Return mapping** in principal strain space with volumetric-deviatoric split
+- **Damage mechanics** based on accumulated plastic strain with configurable softening
+- **Phase transition** from continuum to discrete particles at critical damage (D ≥ 1.0)
+- **Kelvin-Voigt viscoelasticity** for rate-dependent behavior and numerical stabilization
+- **APIC transfer scheme** (Affine Particle-In-Cell) for angular momentum conservation
+- **Optional RPIC** (Rotated PIC) for controllable numerical damping
 - **Grid-based boundary conditions** with Coulomb friction
+- **Geostatic initialization** with K₀ coefficient for pre-stressed domains
 - **Spatially-varying properties**: Load heterogeneous material fields from HDF5
 
 ### Extended Position Based Dynamics (XPBD)
-- **Particle-particle contact resolution** using hash grid for efficient neighbor search
+- **Particle-particle contact resolution** using spatial hash grid for O(n) neighbor search
 - **Particle-boundary contacts** with friction
 - **Static/dynamic friction** transition based on velocity threshold
-- **Particle cohesion** for modeling cementation
-- **Particle sleeping** mechanism to improve efficiency
-- **Particle swelling** to model volume expansion during fragmentation
+- **Particle cohesion** for modeling cementation between fragments
+- **Particle sleeping** mechanism for computational efficiency
+- **Particle swelling** to model volume expansion (bulking) during fragmentation
 - **Velocity clamping** to prevent excessive velocities during phase change
 
-### Coupling Mechanics
-- **Hybrid coupling approach**: 
-  - **Mass via grid**: XPBD particles contribute mass to MPM grid (prevents spurious pulling forces)
-  - **Momentum via contact**: Direct particle contact forces handle interaction (physically realistic)
+### MPM-XPBD Coupling
+- **Contact-based momentum transfer**: Direct particle-particle contact forces handle all MPM-XPBD interaction
+- **Contact-based transition locking (optional)**: MPM particles in contact with XPBD debris are prevented from transitioning (maintains structural support)
 - **Energy-based velocity initialization**: Elastic strain energy converts to kinetic energy during phase transition
-- **Smooth velocity clipping**: Prevents shock loading when particles first enter XPBD regime
+
+### Simulation Control
+- **Two-phase big step structure**:
+  - Phase 1: Combined MPM+XPBD (coupled simulation)
+  - Phase 2: XPBD-only (optional settling phase with frozen MPM)
+- **Damage-based early termination**: Stop combined phase when damage stops accumulating
+- **Sleep-based termination**: Stop XPBD phase when sufficient particles are sleeping
+- **Gravity pulse loading**: Apply temporary increased gravity at start of each big step
+- **Restart from checkpoints**: Resume simulation from VTP files saved at big step boundaries
 
 ### Numerical Features
 - **GPU acceleration** using NVIDIA Warp
 - **Explicit time integration** with subcycling (fast MPM steps, slower XPBD steps)
-- **Convergence-based adaptive stepping**: Outer loop continues until velocity residual converges
+- **Convergence-based adaptive stepping**: Inner loop continues until velocity residual converges
+- **Automatic CFL analysis**: Estimates stability limits and wave speeds on startup
 - **Optional creep model**: Damage-dependent long-term strength reduction
 
 ## Requirements
@@ -60,7 +71,7 @@ Install dependencies with:
 pip install warp-lang numpy h5py matplotlib scipy pyglet pyvista lxml vtk
 ```
 
-**Hardware**: CUDA-capable NVIDIA GPU (recommended: RTX 3000+ series)
+**Hardware**: CUDA-capable NVIDIA GPU (recommended: RTX 3000+ series, 8GB+ VRAM)
 
 ## Quick Start
 
@@ -72,426 +83,724 @@ conda activate fs5
 
 # Run the general benchmark (quick test)
 python runMPMYDW.py --config ./benchmarks/generalBenchmark/config_quick_test.json
+
+# Run with real-time visualization
+python runMPMYDW.py --config ./benchmarks/generalBenchmark/config_quick_test.json --render 1
+
+# Run and auto-open ParaView after completion
+python runMPMYDW.py --config ./benchmarks/generalBenchmark/config_quick_test.json --open_paraview 1
 ```
 
 ### Creating Custom Simulations
 
 1. **Prepare particle domain**: Create HDF5 file with required fields
    ```python
+   import h5py
+   import numpy as np
+   
    # Required fields:
-   # - 'x': particle positions, shape (3, n_particles)
+   # - 'x': particle positions, shape (3, n_particles) - NOTE: transposed!
    # - 'particle_volume': volume per particle, shape (n_particles,)
    
-   # Optional spatial property fields:
-   # - 'density', 'E', 'nu' - elastic properties
-   # - 'ys', 'alpha' - yield properties
-   # - 'hardening', 'softening' - plasticity
-   # - 'eta_shear', 'eta_bulk' - viscosity
-   # - 'strainCriteria' - damage threshold
-   
-   # See examples in:
-   # - exampleDomains/createInputHDF5.py
-   # - benchmarks/spatialBenchmark/createInputHDF5.py
-   # - benchmarks/cavingBenchmark/createRandomRockDomain.py
+   with h5py.File("domain.h5", "w") as f:
+       f.create_dataset("x", data=positions.T)  # Shape: (3, N), NOT (N, 3)
+       f.create_dataset("particle_volume", data=volumes)
+       
+       # Optional: spatially-varying properties (per-particle arrays)
+       f.create_dataset("E", data=E_array)
+       f.create_dataset("ys", data=ys_array)
+       f.create_dataset("density", data=density_array)
+       # etc.
    ```
 
-2. **Configure simulation**: Create a JSON config file (see `benchmarks/generalBenchmark/config_quick_test.json`)
+2. **Configure simulation**: Create a JSON config file (see examples in `benchmarks/`)
 
 3. **Run**: `python runMPMYDW.py --config your_config.json`
 
-### Spatially-Varying Material Properties
+### Restart from Checkpoint
 
-The simulator supports **heterogeneous materials** with spatially-varying properties stored in HDF5 files. This enables realistic modeling of rock masses with spatial variability using Gaussian random fields or structured property distributions.
-
-#### Available Benchmarks:
-
-**1. Spatial Benchmark** - Demonstration of property loading:
 ```bash
-cd benchmarks/spatialBenchmark
-python createInputHDF5.py  # Generate example with spatial properties
-cd ../..
-python runMPMYDW.py --config ./benchmarks/spatialBenchmark/config_spatial.json
+# Resume simulation from a checkpoint VTP file (must be from big step boundary)
+python runMPMYDW.py --config ./config.json --restart ./output/sim_step_0001_000500_t0000_5000_particles.vtp
 ```
 
-**2. Caving Benchmark** - Large-scale heterogeneous rock domain:
-```bash
-cd benchmarks/cavingBenchmark  
-python createRandomRockDomain.py  # Generate 50×50×200m domain (522k particles)
-python visualizeRandomRockDomain.py  # Inspect property fields
-cd ../..
-python runMPMYDW.py --config ./benchmarks/cavingBenchmark/config_random_rock.json
-```
-
-**3. Coupling Test** - MPM-XPBD interaction validation:
-```bash
-python runMPMYDW.py --config ./benchmarks/spatialBenchmark/config_coupling_test.json
-```
-
-#### Supported Spatial Properties:
-- `density`, `E`, `nu` - Elastic properties
-- `ys` - Yield stress (Von Mises or Drucker-Prager cohesion)
-- `alpha` - Drucker-Prager pressure sensitivity (friction angle effect)
-- `hardening`, `softening` - Plasticity evolution parameters
-- `eta_shear`, `eta_bulk` - Viscosity coefficients
-- `strainCriteria` - Failure strain threshold for damage
-
-If properties are not in HDF5, command-line/JSON config values are used as uniform defaults.
-
-See `benchmarks/spatialBenchmark/QUICKSTART.md` and `benchmarks/cavingBenchmark/README_random_rock.md` for details.
+Checkpoint files contain full simulation state including:
+- Particle positions, velocities, deformation gradients
+- Material properties (μ, λ, σ_y, etc.)
+- Damage and accumulated plastic strain
+- XPBD state (initial positions, cumulative distances)
 
 ## Mathematical Model
 
-### MPM Constitutive Models
+### Constitutive Framework: Multiplicative Elastoplasticity
 
-The framework supports two plasticity models selected via `constitutive_model` parameter:
+The framework uses **multiplicative decomposition** of the deformation gradient in **logarithmic (Hencky) strain space**. This is essential for large deformation problems where small-strain assumptions (ε = ∇u) break down beyond ~5-10% strain.
 
-#### **Von Mises (constitutive_model=0)**: Pressure-independent J2 plasticity
-- Suitable for metals and materials with negligible friction
-- Yield criterion: σ_eq ≤ (1 - D)·σ_y
-- Associated flow (no dilatancy)
+#### Kinematic Setup
 
-#### **Drucker-Prager (constitutive_model=1)**: Pressure-dependent frictional plasticity
-- Suitable for granular materials, rocks, soils
-- Yield criterion: σ_eq ≤ (1 - D)·(σ_y - α·p)
-  - α = pressure sensitivity (related to friction angle)
-  - p = mean stress (compression negative)
-- Non-associated flow with dilatancy (volume expansion during shear)
-- β = 0.3·α (dilation angle parameter)
+1. **Deformation gradient update** (velocity gradient integration):
+   ```
+   F_trial = (I + ∇v·Δt) · F_n
+   ```
 
-Both models use **multiplicative elasto-plasticity** in logarithmic strain space:
+2. **Polar decomposition via SVD**:
+   ```
+   F = U · Σ · V^T
+   ```
+   where Σ = diag(σ₁, σ₂, σ₃) are the principal stretches.
 
-1. **Elastic trial deformation gradient**: 
-   - F_trial = (I + ∇v·dt)·F_n
+3. **Logarithmic (Hencky) strain**:
+   ```
+   ε = log(Σ) = [log(σ₁), log(σ₂), log(σ₃)]
+   ```
+   
+   **Why logarithmic strain?** It provides:
+   - Additive decomposition: ε_total = ε_elastic + ε_plastic
+   - Symmetric behavior in tension/compression
+   - Correct behavior under large rotations (rotation encoded in U, V)
 
-2. **Logarithmic strain decomposition**:
-   - F = U·Σ·V^T (SVD decomposition)
-   - ε = log(Σ) = [log(σ₁), log(σ₂), log(σ₃)]
-   - Deviatoric strain: ε_dev = ε - (tr(ε)/3)·I
+4. **Volumetric-deviatoric split**:
+   ```
+   ε_vol = tr(ε)/3 = (ε₁ + ε₂ + ε₃)/3
+   ε_dev = ε - ε_vol · I
+   ```
 
-3. **Kirchhoff stress** (logarithmic model):
-   - τ = 2μ·ε + λ·tr(ε)·I
-   - τ_dev = deviatoric part
+#### Stress Computation
 
-4. **Yield criterion** (damage-modified):
-   - **Von Mises**: σ_eq = ||τ_dev|| ≤ (1 - D)·σ_y
-   - **Drucker-Prager**: σ_eq ≤ (1 - D)·(σ_y - α·p) where p = tr(τ)/3
+**Kirchhoff stress** (work-conjugate to logarithmic strain):
+```
+τ = 2μ·ε + λ·tr(ε)·I
+```
 
-5. **Return mapping** (if yielding):
-   - Δγ = ||ε_dev|| - σ_y_eff/(2μ)
-   - ε_plastic += √(2/3)·Δγ
-   - ε_dev_corrected = ε_dev - (Δγ/||ε_dev||)·ε_dev
-   - **Drucker-Prager only**: Add volumetric correction for dilatancy
-     - ε_vol_plastic = β·Δγ (β = 0.3·α)
+where μ, λ are Lamé parameters:
+```
+μ = E / (2(1 + ν))
+λ = E·ν / ((1 + ν)(1 - 2ν))
+```
 
-6. **Damage evolution**:
-   - dD = dε_plastic / ε_critical
-   - D = min(1.0, D + dD)
+**Cauchy stress** (for output/visualization):
+```
+σ = τ / det(F)
+```
 
-7. **Phase transition** (when D ≥ 1.0):
-   - Material label: 1 (MPM) → 2 (XPBD)
-   - Elastic strain energy → kinetic energy:
-     - u = 0.5·τ:ε (strain energy density)
-     - v_release = √(2·η·u/ρ) (η = efficiency factor)
+### Plasticity Models
 
-8. **Viscous damping** (Kelvin-Voigt):
-   - Strain rate: ε̇ = 0.5(∇v + ∇v^T)
-   - Viscous stress: τ_visc = 2η_shear·ε̇_dev + η_bulk·tr(ε̇)·I
+#### Von Mises (constitutive_model=0)
+
+**Yield criterion** (J₂ plasticity):
+```
+f = ||τ_dev|| - √(2/3)·(1 - D)·σ_y ≤ 0
+```
+
+**Associated flow rule** (no dilatancy):
+```
+Δε_plastic = Δγ · (τ_dev / ||τ_dev||)
+```
+
+**Plastic multiplier**:
+```
+Δγ = ||ε_dev|| - σ_y_eff / (2μ)
+```
+
+#### Drucker-Prager (constitutive_model=1)
+
+**Yield criterion** (pressure-dependent):
+```
+f = ||τ_dev|| - √(2/3)·(1 - D)·(σ_y - α·p) ≤ 0
+```
+
+where:
+- p = tr(τ)/3 is the mean Kirchhoff stress (compression negative)
+- α is the pressure sensitivity (related to friction angle φ by α ≈ 2·sin(φ)/(√3·(3 - sin(φ))))
+- Typical values: α = 0.2-0.5 for rocks/soils
+
+**Non-associated flow rule** (with dilatancy):
+```
+Δε_plastic = Δγ · [n_dev + β·I/3]
+```
+
+where:
+- n_dev = τ_dev / ||τ_dev|| (deviatoric flow direction)
+- β = 0.3·α is the dilatancy parameter
+- The β·I/3 term produces volumetric expansion during shear (critical for granular materials)
+
+**Physical interpretation**:
+- Compression (p < 0): -α·p > 0 → increases effective yield stress → stronger under confinement
+- Tension (p > 0): -α·p < 0 → decreases effective yield stress → weaker in tension
+- If α = 0: reduces to Von Mises (pressure-independent)
+
+### Damage Evolution
+
+**Isotropic scalar damage** based on accumulated plastic strain:
+
+```
+D = min(1.0, Σ(Δε_plastic) / ε_critical)
+```
+
+where ε_critical = `strainCriteria` parameter.
+
+**Damage effects**:
+1. **Stiffness degradation**: Effective moduli = (1 - D) × nominal moduli
+2. **Strength degradation**: σ_y_eff = (1 - D) × σ_y
+3. **Phase transition trigger**: When D ≥ 1.0 AND materialLabel == 1
+
+### Phase Transition
+
+When a particle reaches critical damage (D ≥ 1.0):
+
+1. **Material label change**: 1 (MPM) → 2 (XPBD)
+
+2. **Energy release**: Elastic strain energy converts to kinetic energy
+   ```
+   u = 0.5 · τ : ε   (strain energy density)
+   v_release = √(2 · η · u / ρ)
+   ```
+   where η = `eff` (efficiency factor, 0-1)
+
+3. **Initial XPBD position recorded** for swelling calculations
+
+4. **Stress zeroing**: Failed material carries no stress (handled by XPBD contacts)
+
+### Viscoelasticity (Kelvin-Voigt)
+
+Rate-dependent stress contribution for numerical stability:
+
+```
+τ_visc = 2·η_shear·ε̇_dev + η_bulk·tr(ε̇)·I
+```
+
+where ε̇ = 0.5(∇v + ∇v^T) is the strain rate tensor.
+
+**Usage**: 
+- Set η_shear, η_bulk > 0 for rate-dependent behavior
+- Helps stabilize rapid loading and phase transitions
+- Typical values: 10³ - 10⁶ Pa·s depending on strain rate regime
+
+### Geostatic Initialization
+
+For problems with pre-existing stress state (K₀ conditions):
+
+```
+σ_v = -ρ·g·(z_top - z)        (vertical stress from overburden)
+σ_h = K₀·σ_v                   (horizontal stress)
+```
+
+**Critical implementation detail**: The deformation gradient F is initialized to encode the prestress, NOT the stress tensor directly. This ensures consistency with the multiplicative plasticity formulation:
+
+```
+F_initial = diag(exp(ε₁), exp(ε₂), exp(ε₃))
+```
+
+where strains are computed from the target geostatic stress state via the constitutive law.
 
 ### XPBD Contact Resolution
 
-Uses position-based dynamics with constraint projection:
+Position-based dynamics with iterative constraint projection:
 
-1. **Particle-particle contacts**:
-   - Constraint: C = ||x_i - x_j|| - (r_i + r_j) ≥ 0
-   - Normal correction: λ_n = C
-   - Friction: λ_f = max(μ·λ_n, -||v_t||·dt)
-   - Position update: x += (δ_n + δ_f)·(w_i/(w_i + w_j))
+**Particle-particle contact constraint**:
+```
+C = ||x_i - x_j|| - (r_i + r_j) ≥ 0
+```
 
-2. **Particle-boundary contacts**:
-   - Similar constraint for each boundary plane
-   - Static/dynamic friction based on velocity threshold
+**Normal correction** (penetration resolution):
+```
+Δx_n = C · n · w_i / (w_i + w_j)
+```
+where n = (x_i - x_j)/||x_i - x_j|| and w = 1/m (inverse mass).
 
-3. **Iteration scheme**:
-   - Multiple Gauss-Seidel iterations per timestep
-   - Relaxation parameter for stability
+**Friction** (Coulomb model):
+```
+Δx_f = clamp(Δv_t · Δt, -μ·|Δx_n|, μ·|Δx_n|)
+```
 
-### Grid Operations
+**Static/dynamic transition**:
+```
+μ = μ_static   if ||v|| < v_threshold
+μ = μ_dynamic  otherwise
+```
 
-1. **Particle-to-Grid (P2G)**:
-   - Transfer mass: m_i += Σ_p w_ip·m_p
-   - Transfer momentum: (mv)_i += Σ_p w_ip·[m_p·v_p + dt·f_p]
-   - Stress force: f_p = -V_p·σ_p·∇w_ip
+**Iteration scheme**: Multiple Gauss-Seidel iterations with SOR relaxation.
 
-2. **Grid Update**:
-   - Normalize: v_i = (mv)_i / m_i
-   - Add gravity: v_i += g·dt
-   - Apply boundary conditions (friction walls)
+### MPM-XPBD Coupling
 
-3. **Grid-to-Particle (G2P)**:
-   - Update velocity: v_p = Σ_i w_ip·v_i
-   - Update position: x_p += v_p·dt
-   - Update APIC matrix: C_p = Σ_i v_i⊗∇w_ip
-   - Update deformation: F_trial = (I + ∇v·dt)·F_n
+The coupling uses **direct contact-based momentum transfer**:
+
+**Contact detection**: During XPBD iterations, particle-particle contacts are detected between all active particles regardless of material type (MPM or XPBD).
+
+**Momentum transfer**: When an MPM particle (materialLabel ≤ 1) contacts an XPBD particle (materialLabel == 2):
+- Contact forces are computed using the same XPBD constraint projection
+- Position corrections are converted to velocity impulses for MPM particles
+- The `xpbd_mpm_coupling_strength` parameter scales this impulse
+
+**Transition locking**: 
+- Before each XPBD step: Reset all MPM particles from label 0 → label 1
+- During contact detection: If MPM contacts XPBD, set label → 0
+- In return mapping: Only label == 1 particles can transition to label 2
+- **Purpose**: Prevents cascading failure where supporting MPM material fails because debris is pulling on it
+
+```python
+# Contact-based transition locking flow:
+# 1. Reset: materialLabel[p] = 1 for all MPM particles in contact (was 0)
+# 2. Detect: if MPM[i] touches XPBD[j], set materialLabel[i] = 0
+# 3. Return mapping: only materialLabel == 1 can transition when damage >= 1.0
+```
 
 ## Configuration Parameters
 
-### Time Stepping
-- `dt`: MPM timestep (typically 1e-3 to 1e-4 s)
-- `dtxpbd`: XPBD timestep (typically 10× larger than dt)
-- `nSteps`: Steps per convergence loop
-- `bigSteps`: Number of outer convergence loops
-- `residualThreshold`: Velocity convergence criterion (m/s per particle radius)
+### Complete Parameter Reference
 
-### Material Properties
-- `density`: Material density (kg/m³)
-- `E`: Young's modulus (Pa)
-- `nu`: Poisson's ratio (dimensionless)
-- `constitutive_model`: 0=Von Mises, 1=Drucker-Prager
-- `ys`: Yield stress (Pa) - for Von Mises, or cohesion for Drucker-Prager
-- `alpha`: Pressure sensitivity (Drucker-Prager only, dimensionless, typically 0.2-0.5)
-- `hardening`: Strain hardening parameter (dimensionless)
-- `softening`: Strain softening parameter (dimensionless)
-- `eta_shear`: Shear viscosity (Pa·s)
-- `eta_bulk`: Bulk viscosity (Pa·s)
+#### Time Stepping
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `dt` | float | 0 (auto) | MPM timestep. If 0, computed from CFL condition |
+| `dtxpbd` | float | 0.01 | XPBD timestep (typically 10-100× larger than dt) |
+| `bigStepDuration` | float | 10.0 | Duration of each big step (seconds) |
+| `bigSteps` | int | 1 | Number of outer convergence loops |
+| `residualThreshold` | float | 1e-8 | Velocity convergence criterion |
 
-### Damage & Phase Transition
-- `strainCriteria`: Critical plastic strain for full damage (dimensionless)
-- `eff`: Energy release efficiency during phase change (0-1)
+#### Material Properties
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `density` | float | 2500 | Material density (kg/m³) |
+| `E` | float | 1e9 | Young's modulus (Pa) |
+| `nu` | float | 0.3 | Poisson's ratio |
+| `constitutive_model` | int | 1 | 0=Von Mises, 1=Drucker-Prager |
+| `ys` | float | 1e6 | Yield stress / cohesion (Pa) |
+| `alpha` | float | 0.3 | Pressure sensitivity (Drucker-Prager) |
+| `hardening` | float | 0.0 | Strain hardening coefficient |
+| `softening` | float | 0.0 | Strain softening coefficient |
+| `eta_shear` | float | 0.0 | Shear viscosity (Pa·s) |
+| `eta_bulk` | float | 0.0 | Bulk viscosity (Pa·s) |
 
-### Grid & Domain
-- `domainFile`: Path to HDF5 particle domain file
-  - **Required fields**: `x` (shape 3×n_particles), `particle_volume` (shape n_particles)
-  - **Optional fields**: Spatial property arrays (see Spatially-Varying Properties section)
-- `grid_padding`: Padding around particle domain (m)
-- `grid_particle_spacing_scale`: Grid spacing = particle_diameter × scale
-- `K0`: Lateral earth pressure coefficient for initial geostatic stress (dimensionless, typically 0.4-0.7)
+#### Damage & Phase Transition
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `strainCriteria` | float | 0.01 | Critical plastic strain for full damage |
+| `eff` | float | 0.0 | Energy release efficiency (0-1) |
+| `mpm_contact_transition_lock` | int | 1 | Prevent MPM→XPBD transition when in contact with XPBD |
 
-### XPBD Parameters
-- `xpbd_iterations`: Contact solver iterations per step
-- `xpbd_relaxation`: SOR relaxation parameter (0-1)
-- `dynamicParticleFriction`: Friction coefficient (moving particles)
-- `staticParticleFriction`: Friction coefficient (static particles)
-- `staticVelocityThreshold`: Velocity threshold for static/dynamic transition
-- `particle_cohesion`: Cohesive distance (m)
-- `sleepThreshold`: Sleep velocity threshold (m/s per radius)
+#### Grid & Domain
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `domainFile` | str | - | Path to HDF5 particle domain file |
+| `grid_padding` | float | 10 | Padding around particle domain (m) |
+| `grid_particle_spacing_scale` | float | 2.0 | Grid spacing = particle_diameter × scale |
+| `boundary_padding_mask` | str | "111111" | Which boundaries to pad (xmin,xmax,ymin,ymax,zmin,zmax) |
+| `K0` | float | 0.5 | Lateral earth pressure coefficient |
+| `z_top` | float | null | Top elevation for geostatic stress (null = auto) |
+| `initialise_geostatic` | int | 0 | Enable geostatic stress initialization |
 
-### Damping & Integration
-- `rpic_damping`: RPIC damping factor (0 = APIC, 1 = full RPIC, -1 = PIC)
-- `grid_v_damping_scale`: Grid velocity scaling per step
-- `update_cov`: Enable covariance tracking (for future anisotropy)
+#### XPBD Parameters
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `xpbd_iterations` | int | 4 | Contact solver iterations per step |
+| `xpbd_relaxation` | float | 1.0 | SOR relaxation parameter |
+| `xpbd_mpm_coupling_strength` | float | 0.25 | XPBD→MPM velocity coupling factor |
+| `dynamicParticleFriction` | float | 0.3 | Dynamic friction coefficient |
+| `staticParticleFriction` | float | 0.5 | Static friction coefficient |
+| `staticVelocityThreshold` | float | 1e-5 | Static/dynamic friction transition |
+| `particle_cohesion` | float | 0.0 | Cohesive attraction distance (m) |
+| `sleepThreshold` | float | 0.5 | Sleep velocity threshold (m/s per radius) |
 
-### Swelling (Fragmentation)
-- `swellingRatio`: Particle radius increase ratio after phase change
-- `swellingActivationFactor`: Distance threshold for swelling activation
-- `swellingMaxFactor`: Distance threshold for full swelling
+#### Simulation Control
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `xpbdOnlyDuration` | float | 0.0 | XPBD-only phase duration after combined phase |
+| `damage_stall_threshold` | float | 1e-9 | Mean damage change threshold for early termination |
+| `damage_stall_steps` | int | 100 | Steps below threshold to trigger early termination |
+| `xpbd_sleep_termination_ratio` | float | 0.95 | XPBD sleep ratio for phase 2 early termination |
+| `gravity_pulse_factor` | float | 1.0 | Gravity multiplier during pulse |
+| `gravity_pulse_duration` | float | 0.0 | Duration of gravity pulse (seconds) |
 
-### Boundaries & Visualization
-- `boundFriction`: Friction on domain boundaries
-- `gravity`: Gravitational acceleration (m/s², typically -9.81)
-- `render`: Enable real-time rendering (0/1)
-- `color_mode`: Particle coloring scheme ("damage", "state", "effective_ys", "velocity", etc.)
-- `saveFlag`: Enable output file saving (0/1)
-- `outputFolder`: Directory for output VTK files
+#### Damping & Integration
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `rpic_damping` | float | 0.0 | RPIC damping (0=APIC, 1=full RPIC, -1=PIC) |
+| `grid_v_damping_scale` | float | 1.0 | Grid velocity scaling per step |
+| `update_cov` | int | 1 | Enable covariance tracking |
+| `particle_v_max` | float | 100.0 | Maximum particle velocity (m/s) |
+| `volumetric_locking_correction` | int | 0 | Enable F-bar volumetric locking correction |
+
+#### Swelling (Fragmentation Bulking)
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `swellingRatio` | float | 0.0 | Particle radius increase ratio |
+| `swellingActivationFactor` | float | 0.0 | Distance threshold for activation |
+| `swellingMaxFactor` | float | 1.0 | Distance threshold for full swelling |
+
+#### Boundaries & Visualization
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `boundaryCondition` | str | "friction" | "friction" or "restitution" |
+| `boundFriction` | float | 0.3 | Boundary friction coefficient |
+| `boundRestitution` | float | 0.0 | Boundary restitution coefficient |
+| `minBoundsXPBD` | vec3 | null | XPBD-specific minimum bounds |
+| `maxBoundsXPBD` | vec3 | null | XPBD-specific maximum bounds |
+| `xpbd_deactivation_z_datum` | float | null | Z below which XPBD particles deactivate |
+| `render` | int | 0 | Enable real-time OpenGL rendering |
+| `render_interval` | float | 0.1 | Time between renders/saves (seconds) |
+| `color_mode` | str | "damage" | Particle coloring: "damage", "state", "effective_ys", "velocity", "stress" |
+| `saveFlag` | int | 0 | Enable VTP/VTI output |
+| `outputFolder` | str | "./output/" | Output directory |
+| `open_paraview` | int | 0 | Auto-open ParaView after simulation |
+
+#### Restart
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `restart` | str | null | Path to checkpoint VTP file for restart |
 
 ## Project Structure
 
 ```
 MPMWarpYDW/
 ├── runMPMYDW.py                 # Main simulation driver
-├── config.json                  # Default configuration
 ├── README.md                    # This file
+├── .github/
+│   └── copilot-instructions.md # AI coding assistant instructions
 │
 ├── utils/                       # Core simulation modules
-│   ├── getArgs.py              # Configuration argument parser
+│   ├── getArgs.py              # JSON/CLI configuration parser
 │   ├── simulationRoutines.py   # High-level MPM/XPBD orchestration
-│   ├── mpmRoutines.py          # MPM kernels (stress, P2G, G2P, damage)
-│   ├── xpbdRoutines.py         # XPBD kernels (contacts, integration)
-│   ├── fs5PlotUtils.py         # Visualization utilities
-│   └── fs5RendererCore.py      # OpenGL renderer
+│   ├── mpmRoutines.py          # MPM kernels (stress, P2G, G2P, damage, return mapping)
+│   ├── xpbdRoutines.py         # XPBD kernels (contacts, integration, hash grid)
+│   ├── simStates.py            # State containers (SimState, MPMState, XPBDState)
+│   ├── fs5PlotUtils.py         # VTP/VTI output, restart save/load, ParaView integration
+│   └── fs5RendererCore.py      # OpenGL real-time visualization
 │
-├── exampleDomains/              # Input particle geometries
+├── exampleDomains/              # Input particle geometry examples
 │   ├── createInputHDF5.py      # Script to generate particle domains
-│   ├── annular_arch_particles.h5   # Example: annular arch geometry
-│   └── annular_arch_particles.vtp  # VTK visualization
+│   └── *.h5, *.vtp             # Example geometries
 │
-├── benchmarks/                  # Test cases
-│   ├── generalBenchmark/
-│   │   ├── config_quick_test.json  # Quick validation test
-│   │   └── README.md               # Benchmark documentation
-│   ├── spatialBenchmark/           # Spatial properties demos
-│   │   ├── createInputHDF5.py      # Generate domain with spatial properties
-│   │   ├── createCouplingTest.py   # Generate MPM-XPBD coupling test
-│   │   ├── config_spatial.json     # Configuration for spatial demo
-│   │   ├── config_coupling_test.json  # MPM-XPBD coupling validation
-│   │   ├── plot_yield_surface.py   # Visualize Drucker-Prager yield surfaces
-│   │   ├── QUICKSTART.md           # Quick start guide
-│   │   └── README.md               # Detailed documentation
-│   └── cavingBenchmark/            # Large-scale rock caving simulations
-│       ├── createRandomRockDomain.py  # Generate 50×50×200m heterogeneous domain
-│       ├── visualizeRandomRockDomain.py  # Visualize property fields
-│       ├── verify_hdf5_fields.py   # Verify HDF5 file correctness
-│       ├── config_random_rock.json # Configuration for random rock domain
-│       └── README_random_rock.md   # Detailed documentation
+├── benchmarks/                  # Validation and test cases
+│   ├── generalBenchmark/       # Basic validation tests
+│   │   ├── config_*.json       # Various test configurations
+│   │   ├── analytical_validation.py  # Compare to analytical solutions
+│   │   └── create_block_particles.py # Generate test domains
+│   │
+│   ├── spatialBenchmark/       # Heterogeneous material tests
+│   │   ├── config_coupling_*.json    # MPM-XPBD coupling tests
+│   │   ├── createCouplingTestColumn.py  # Generate coupling test domains
+│   │   ├── check_xpbd_completely_weightless.py  # Verify coupling physics
+│   │   └── analyze_stress_profiles.py  # Post-processing analysis
+│   │
+│   ├── dynamicBenchmark/       # Dynamic impact tests
+│   │   ├── config_dynamic.json # Drop test configuration
+│   │   └── create_dynamic_domain.py  # Generate impact test domain
+│   │
+│   └── cavingBenchmark/        # Large-scale rock caving
+│       ├── config_random_rock.json   # Production configuration
+│       ├── createRandomRockDomain.py # Generate heterogeneous rock domain
+│       └── visualizeRandomRockDomain.py  # Visualize property fields
 │
-└── output/                      # Simulation results (VTK files)
-    ├── sim_step_XXXXXX_particles.vtp
-    └── sim_step_XXXXXX_grid.vti
+└── output/                      # Simulation results (generated)
+    ├── sim_step_*_particles.vtp  # Particle data (ParaView time series)
+    └── sim_step_*_grid.vti       # Grid data (optional)
 ```
 
 ## Simulation Workflow
 
-### Initialization
-1. Load particle domain from HDF5
-2. Compute grid dimensions and spacing
-3. Initialize material properties (E, ν, σ_y, etc.)
-4. Convert elastic moduli to Lamé parameters (μ, λ)
-5. Initialize particle state (F=I, stress=0, damage=0)
+### Initialization Sequence
 
-### Main Loop (bigSteps)
-For each big step:
+1. **Load particle domain** from HDF5
+2. **Compute grid dimensions** from particle bounds + padding
+3. **Initialize material properties**:
+   - Load from HDF5 if available (spatially-varying)
+   - Fall back to JSON/CLI uniform values
+4. **Convert elastic moduli** to Lamé parameters (μ, λ, K)
+5. **Initialize particle state** (F=I, σ=0, D=0)
+6. **Geostatic initialization** (if enabled):
+   - Compute target stress from depth
+   - Initialize F to encode prestress
+7. **CFL analysis**: Estimate timestep limits, wave speeds
 
-1. **Reset convergence**: residual = ∞
-2. **Inner MPM loop** (until convergence or nSteps):
-   
-   **MPM Step** (every dt):
-   - Compute stress from F_trial (return mapping + damage)
-   - P2G: Transfer stress and APIC momentum
-   - Grid operations: Normalize, add gravity, apply boundaries
-   - G2P: Update particle x, v, C, F_trial
-   
-   **XPBD Step** (every dtxpbd):
-   - Build spatial hash grid
-   - Integrate particles (gravity)
-   - Solve contacts (multiple iterations):
-     - Particle-boundary contacts
-     - Particle-particle contacts
-     - Apply position corrections
-   - Update particle velocities from positions
-   - Apply sleeping, velocity clipping, swelling
-   
-   **Convergence Check**:
-   - Compute residual = Σ(||v_p||/r_p) / N_active
-   - If residual < threshold and counter > minSteps: break
+### Main Loop Structure
 
-3. **Creep update**: Apply time-dependent strength reduction (optional)
-4. **Visualization/Output**: Save VTK files if enabled
+```
+for bigStep in [restart_bigStep ... bigSteps]:
+    
+    # === PHASE 1: Combined MPM+XPBD ===
+    apply_gravity_pulse()  # if configured
+    
+    while (counter < nSteps) and (residual > threshold):
+        
+        # MPM Step (every dt)
+        compute_stress_from_F_trial()  # includes return mapping, damage
+        P2G()                          # scatter mass, momentum, stress forces
+        grid_operations()              # normalize, gravity, boundaries
+        G2P()                          # gather velocity, update F, position
+        
+        # XPBD Step (every dtxpbd)
+        if counter % mpmStepsPerXpbdStep == 0:
+            build_spatial_hash_grid()
+            reset_mpm_contact_labels()  # label 0 → 1
+            for iteration in xpbd_iterations:
+                solve_boundary_contacts()
+                solve_particle_contacts()  # sets label → 0 if MPM contacts XPBD
+                apply_position_corrections()
+            apply_mpm_contact_impulses()
+            update_velocities()
+            sleep_particles()
+            swell_particles()
+        
+        # Convergence & early termination
+        compute_residual()
+        check_damage_stall()
+    
+    # === PHASE 2: XPBD-only (optional) ===
+    if xpbdOnlyDuration > 0:
+        for step in xpbdOnlySteps:
+            xpbdSimulationStep(xpbd_only=True)  # MPM frozen
+            check_sleep_termination()
+    
+    # === Big step completion ===
+    save_checkpoint()  # VTP with full restart data
+    deactivate_particles_below_datum()
+    apply_creep()  # damage-dependent strength reduction
+```
 
 ### Output Files
-- **Particles** (VTP): Position, velocity, radius, stress, damage, material label, accumulated strain
-- **Grid** (VTI): Grid mass distribution (for visualization)
 
-## Important Implementation Details
+**Particle VTP files** (`sim_step_BBBB_CCCCCC_tTTTT_TTTT_particles.vtp`):
+- `positions`: (N, 3) particle centers
+- `radius`: (N,) particle radii
+- `velocity`: (N, 3) velocity vectors
+- `damage`: (N,) damage scalar [0, 1]
+- `mean_stress`: (N,) tr(σ)/3
+- `von_mises`: (N,) equivalent stress
+- `stress_tensor`: (N, 6) symmetric stress components (xx, yy, zz, xy, xz, yz)
+- `ys`: (N,) current yield stress
+- `effective_ys`: (N,) damage-modified yield stress
+- `active_label`: (N,) 0=sleeping, 1=active
+- `material_label`: (N,) 0=locked MPM, 1=MPM, 2=XPBD
 
-### Material Failure and Phase Transition
+**Checkpoint data** (at big step boundaries):
+- All above plus: F, C, accumulated_strain, ys_base, material properties
+- Enables full simulation restart
 
-When `damage >= 1.0` or `yield_stress <= 0`, material transitions from MPM (label=1) to XPBD (label=2):
+**Grid VTI files** (optional):
+- `mass`: 3D scalar field of grid mass distribution
 
-1. **Stress-free transition**: Material properties set to zero (μ=0, λ=0, ys=0) to prevent spurious forces
-2. **Energy release**: Elastic strain energy converts to kinetic energy with efficiency factor `eff`
-3. **Velocity initialization**: v_release = √(2·eff·u/ρ) added in direction of motion
-4. **One-way transition**: XPBD particles never return to MPM
+## Implementation Details
 
-⚠️ **Critical**: If `strainCriteria` is very large (preventing XPBD transition) but `softening > hardening`, material can reach `ys <= 0` and become a "ghost" MPM particle (zero stiffness but still MPM). This causes P2G failure. **Solution**: Either:
-- Use `strainCriteria` small enough to allow transition before ys→0
-- Ensure `hardening >= softening` to prevent yield stress degradation
-- Force transition when `ys <= 0` even if `damage < 1.0`
+### Material Label System
 
-### Plasticity Irreversibility
+```
+materialLabel = 0: MPM continuum (in contact with XPBD, CANNOT transition)
+materialLabel = 1: MPM continuum (not in contact, CAN transition when D ≥ 1)
+materialLabel = 2: XPBD discrete particles (post-failure)
+```
 
-Plastic deformation is enforced as **permanent** through three mechanisms:
+**Contact-based transition locking** (`mpm_contact_transition_lock`):
+1. Before each XPBD iteration set: Reset all label 0 → label 1
+2. During contact detection: If MPM particle contacts XPBD particle, set label → 0
+3. In return mapping: Only label == 1 particles can transition to label 2
 
-1. **Monotonic plastic strain accumulation**: `accumulated_strain += Δε_plastic` (never decreases)
-2. **Elastic strain reduction**: Plastic part removed from trial strain during return mapping
-3. **Implicit reference configuration update**: Only elastic deformation gradient F_elastic is stored and returned
+**Purpose**: Prevents cascading failure where supporting MPM material fails because the debris it supports is pulling on it.
 
-Upon unloading: stress→0, elastic strain→0, but `accumulated_strain > 0` remains permanently.
+### Critical Bug Prevention
 
-### MPM-XPBD Coupling Strategy
+**Ghost particle problem**: If `strainCriteria` is very large AND `softening > hardening`, particles can reach `ys ≤ 0` while still MPM. These become "ghost particles" with zero stiffness but still participating in grid operations.
 
-The coupling uses a **hybrid approach** to handle interaction between continuum (MPM) and discrete (XPBD) phases:
+**Solution** (implemented): Force transition to XPBD when `ys ≤ 0`, regardless of damage level:
+```python
+if yield_stress[p] < 0.0 or yield_eff < 0.0:
+    damage[p] = 1.0  # Force full damage
+```
 
-- **Mass transfer via grid (P2G)**: XPBD particles contribute **only mass** to the MPM grid, not momentum
-  - Prevents spurious "pulling" forces when XPBD particles move away from MPM continuum
-  - Allows MPM to feel the presence of XPBD material without artificial momentum coupling
-  
-- **Momentum transfer via contact forces**: Direct particle-particle contact detection between XPBD and MPM particles
-  - Properly handles compression and interaction forces
-  - Contact forces computed separately from grid operations
-  - More physically realistic than momentum smearing through the grid
+### Numerical Stability Considerations
 
-This hybrid approach provides stable, physically-meaningful coupling without artificial tensile forces or momentum artifacts.
+**CFL condition**:
+```
+dt < α · dx / c_p
+```
+where:
+- c_p = √((K + 4μ/3) / ρ) is P-wave speed
+- α ≈ 0.3-0.5 for MPM stability (lower than classical FEM CFL)
+- dx = grid_particle_spacing_scale × particle_diameter
 
-## Code Architecture
+**Cell-crossing instability**: Particles moving > 0.5 cells per timestep cause stress oscillations. The code enforces:
+```
+max(||Δx||) < 0.5 · dx
+```
 
-### Kernel Design
-All compute-intensive operations are implemented as **Warp kernels** for GPU execution:
+**Tensile instability**: MPM has reduced accuracy in tension. Critical strain before numerical issues:
+```
+ε_critical ≈ 1 / grid_particle_spacing_scale
+```
 
-- **@wp.kernel**: Thread-parallel operations (one thread per particle/grid cell)
-- **@wp.func**: Device functions callable from kernels
-- Atomic operations for scatter operations (P2G)
+For `grid_particle_spacing_scale = 2.0`: stable up to ~50% strain
+For `grid_particle_spacing_scale = 4.0`: stable up to ~25% strain
 
-### Material Labels
-- `0`: Inactive (not simulated)
-- `1`: MPM continuum material
-- `2`: XPBD discrete particles (post-failure)
+### Grid Resolution Guidelines
 
-### Active Labels
-- `0`: Sleeping/inactive
-- `1`: Active (participating in simulation)
+| Scale | Grid spacing | Accuracy | Cost | Use case |
+|-------|-------------|----------|------|----------|
+| 2.0 | 2× particle diameter | Lower | Fast | Quick tests, large domains |
+| 4.0 | 4× particle diameter | Higher | Medium | **Default, production** |
+| 8.0 | 8× particle diameter | Highest | Slow | Validation, small domains |
 
-## Physics Validity & Limitations
+### Boundary Condition Notes
 
-### Assumptions
-- Small rotation per timestep (for logarithmic strain validity)
-- Isotropic materials (no pre-existing fabric or anisotropy)
-- Rate-independence (viscous terms for numerical stability only, not rate-dependent strength)
-- No thermal coupling
-- No pore pressure/fluid coupling
-- Adiabatic energy release during phase transition
+**Friction boundaries** (`boundaryCondition = "friction"`):
+- Coulomb friction applied tangentially
+- `boundFriction = 0`: Free-slip walls (K₀ conditions difficult to maintain)
+- `boundFriction = 0.3-0.5`: Typical soil/rock friction
 
-### Constitutive Model Limitations
+**K₀ initialization accuracy**:
+- High friction (>0.3): Good K₀ maintenance
+- Low friction (<0.1): Block slides, K₀ stress state degrades
+- Recommendation: Use `boundFriction ≥ 0.3` for geostatic problems
 
-**Von Mises**:
-- ✅ Suitable for: Metals, clays (undrained), materials with negligible friction
-- ❌ Not suitable for: Granular materials, rocks, sands (use Drucker-Prager)
+## Validation & Testing
 
-**Drucker-Prager**:
-- ✅ Suitable for: Rocks, soils, granular materials, frictional-cohesive materials
-- ✅ Pressure-dependent yielding (deeper = stronger)
-- ✅ Non-associated flow with dilatancy (volume expansion during shear)
-- ⚠️ Simplified: No tension cutoff, no corner flow (Mohr-Coulomb equivalent)
+### Analytical Validation (Elastic Regime)
 
-### Numerical Considerations
-- **CFL condition**: dx/dt > max(particle velocity)
-- **Yield stress**: Should be >> bulk modulus × strain increment for stability
-- **Damage softening**: Risk of "ghost particles" if `strainCriteria` too large (see Implementation Details)
-- **Grid resolution**: Typically 2-4× particle diameter for convergence
-- **XPBD iterations**: 4-10 iterations needed for accurate contact resolution
+```bash
+cd benchmarks/generalBenchmark
+python analytical_validation.py --E 1e9 --nu 0.2 --density 5000
+```
 
-### Validation
-- Energy conservation (elastic regime, pre-damage)
-- Momentum conservation (P2G + G2P)
-- Yield surface accuracy (return mapping within tolerance)
-- Contact resolution (penetration < 1% particle radius)
-- Plastic irreversibility (load-unload cycles verify permanent strain)
+**Expected accuracy**: < 5% error vs analytical solution for:
+- ε_max < 5% (linear elastic regime)
+- Sufficient grid resolution (scale ≥ 4.0)
+- Adequate damping (rpic_damping ~ 0.2)
+
+### Coupling Validation
+
+```bash
+cd benchmarks/spatialBenchmark
+python check_xpbd_completely_weightless.py
+python analyze_stress_profiles.py
+```
+
+**Tests verify**:
+- XPBD particles transfer weight to MPM via contacts
+- Density scaling works correctly
+- Stress profiles match analytical expectations
+
+### Large Deformation Tests
+
+```bash
+python runMPMYDW.py --config ./benchmarks/generalBenchmark/config_elastic_soft.json
+```
+
+**Note**: Analytical solutions are INVALID beyond ε > 5-10%. Use large deformation tests for:
+- Numerical stability verification
+- Qualitative behavior assessment
+- Phase transition testing
+
+## Performance Optimization
+
+### GPU Utilization
+- Particle operations: O(N) - scales linearly
+- Grid operations: O(G³) - scales with grid volume
+- Contact detection: O(N) with spatial hashing (avoids O(N²))
+
+### Memory Requirements
+- ~500 bytes/particle (all state arrays)
+- ~100 bytes/grid cell (mass, momentum, velocity)
+- Example: 1M particles + 256³ grid ≈ 2.5 GB VRAM
+
+### Tuning Recommendations
+
+| Parameter | Effect of increase | Typical range |
+|-----------|-------------------|---------------|
+| `dt` | Faster but less stable | Auto (CFL-based) |
+| `xpbd_iterations` | More accurate contacts | 4-10 |
+| `rpic_damping` | More dissipation | 0.0-0.3 |
+| `residualThreshold` | Faster convergence | 1e-8 to 1e-1 |
+| `grid_particle_spacing_scale` | More accurate but slower | 2.0-4.0 |
+
+### Convergence Tips
+1. **Stiff materials** (E > 10⁹): Use small dt, high xpbd_iterations
+2. **Soft materials** (E < 10⁷): Watch for excessive strain
+3. **High gravity loading**: Use viscosity for stabilization
+4. **Phase transitions**: Ensure smooth energy release (eff < 1.0)
+
+## Troubleshooting
+
+### Common Issues
+
+**Particles exploding/flying away**:
+- Check CFL condition (reduce dt)
+- Reduce gravity_pulse_factor
+- Increase viscosity (eta_shear, eta_bulk)
+- Check for division by zero (ys = 0 without transition)
+
+**Stress oscillations**:
+- Increase grid_particle_spacing_scale
+- Add rpic_damping
+- Check boundary conditions
+
+**Phase transition not occurring**:
+- Check strainCriteria (might be too large)
+- Verify damage is accumulating (output damage field)
+- Ensure materialLabel = 1 (not 0 from contact locking)
+
+**Simulation not converging**:
+- Relax residualThreshold
+- Increase minSteps
+- Check for steady-state oscillations (add damping)
+
+**Memory errors**:
+- Reduce particle count
+- Reduce grid resolution
+- Use smaller domain
+
+### Diagnostic Tools
+
+```bash
+# Verify HDF5 file structure
+cd benchmarks/cavingBenchmark
+python verify_hdf5_fields.py random_rock_domain.h5
+
+# Check CFL on startup
+python runMPMYDW.py --config config.json
+# (CFL analysis printed automatically)
+
+# Visualize stress profiles
+cd benchmarks/spatialBenchmark
+python analyze_stress_profiles.py
+```
+
+## References
+
+### MPM Fundamentals
+- Sulsky, D., Chen, Z., & Schreyer, H. L. (1994). A particle method for history-dependent materials. *Computer Methods in Applied Mechanics and Engineering*.
+- Stomakhin, A., Schroeder, C., Chai, L., Teran, J., & Selle, A. (2013). A material point method for snow simulation. *ACM TOG*.
+
+### Transfer Schemes
+- Jiang, C., Schroeder, C., Selle, A., Teran, J., & Stomakhin, A. (2015). The affine particle-in-cell method. *ACM TOG*. (APIC)
+- Jiang, C., Schroeder, C., Teran, J., Stomakhin, A., & Selle, A. (2017). The material point method for simulating continuum materials. *SIGGRAPH Course*.
+
+### XPBD
+- Macklin, M., Müller, M., & Chentanez, N. (2016). XPBD: Position-based simulation of compliant constrained dynamics. *Motion in Games*.
+
+### Constitutive Modeling
+- de Souza Neto, E. A., Peric, D., & Owen, D. R. J. (2011). *Computational Methods for Plasticity*. Wiley. (Logarithmic strain formulation)
+- Simo, J. C. (1992). Algorithms for static and dynamic multiplicative plasticity. *CMAME*. (Return mapping algorithms)
 
 ## Citation
 
 If you use this code in academic work, please cite:
 ```
-[Your publication information here]
+[Publication information - to be added]
 ```
 
 ## License
 
-[Specify license]
+[License information - to be specified]
 
 ## Contact
 
-[Your contact information]
+[Contact information - to be added]
 
 ## Acknowledgments
 
-- Built on [NVIDIA Warp](https://github.com/NVIDIA/warp)
+- Built on [NVIDIA Warp](https://github.com/NVIDIA/warp) for GPU acceleration
 - MPM transfer schemes based on APIC (Jiang et al. 2015)
 - XPBD formulation based on Macklin et al. (2016)
+- Multiplicative plasticity following de Souza Neto et al. (2011)
+- Particle Mechanics Protocols based on FS5
+- Solid Mechanics Model based on LR4
+```

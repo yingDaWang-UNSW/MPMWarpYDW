@@ -648,6 +648,7 @@ for bigStep in range(restart_bigStep, sim.bigSteps):
     # Damage tracking for early termination
     prev_mean_damage = np.mean(mpm.particle_damage.numpy())
     damage_stall_counter = 0
+    damage_stall_steps = int(sim.damage_stall_duration / sim.dt)  # Convert duration to steps
     combined_phase_terminated_early = False
     
     while counter < sim.nSteps and (counter < minSteps or residualCPU > sim.residualThreshold):
@@ -706,17 +707,49 @@ for bigStep in range(restart_bigStep, sim.bigSteps):
         prev_mean_damage = current_mean_damage
         
         # Check for early termination due to damage stalling
-        if damage_stall_counter >= sim.damage_stall_steps and counter > minSteps:
-            print(f"    Early termination: damage stalled for {sim.damage_stall_steps} consecutive steps")
+        if damage_stall_counter >= damage_stall_steps and counter > minSteps:
+            print(f"    Early termination: damage stalled for {sim.damage_stall_duration}s ({damage_stall_steps} steps)")
             combined_phase_terminated_early = True
             # Restore gravity if still in pulse mode
             if counter < gravity_pulse_steps and args.gravity_pulse_factor != 1.0:
                 sim.gravity = base_gravity
             break
         
+        # Count particles by type
+        sim.numActiveMPM.zero_()
+        sim.numActiveXPBD.zero_()
+        sim.numInactiveMPM.zero_()
+        sim.numInactiveXPBD.zero_()
+        wp.launch(
+            kernel=simulationRoutines.countParticlesByType,
+            dim=sim.nPoints,
+            inputs=[
+                sim.activeLabel,
+                sim.materialLabel,
+                sim.numActiveMPM,
+                sim.numActiveXPBD,
+                sim.numInactiveMPM,
+                sim.numInactiveXPBD
+            ],
+            device=device
+        )
+        
         # Print status every 100 steps
         if np.mod(counter,100)==0:
-            print(f'  Step: {counter}, simulationTime: {sim.t:.4f}s, deltaRealTime: +{time.time()-stepStartTime:.4f}s, realTime: {time.time()-startTime:.4f}s, residual: {residualCPU:.4e}, mean damage: {current_mean_damage:.9f} ({damage_change:.3e}), active particles: {sim.numActiveParticles.numpy()[0]}')
+            n_active_mpm = sim.numActiveMPM.numpy()[0]
+            n_active_xpbd = sim.numActiveXPBD.numpy()[0]
+            n_inactive_mpm = sim.numInactiveMPM.numpy()[0]
+            n_inactive_xpbd = sim.numInactiveXPBD.numpy()[0]
+            n_total = n_active_mpm + n_active_xpbd + n_inactive_mpm + n_inactive_xpbd
+            
+            # Sleep stats from sleepParticles kernel (computed during XPBD step)
+            n_total_xpbd = sim.numTotalXPBD.numpy()[0]
+            n_sleeping_xpbd = sim.numSleepingXPBD.numpy()[0]
+            sleep_pct = (n_sleeping_xpbd / n_total_xpbd * 100) if n_total_xpbd > 0 else 0.0
+            
+            print(f'  Step: {counter}, t: {sim.t:.4f}s, Δt_real: +{time.time()-stepStartTime:.4f}s, t_real: {time.time()-startTime:.4f}s')
+            print(f'    residual: {residualCPU:.4e}, mean_damage: {current_mean_damage:.6f} (Δ{damage_change:+.2e})')
+            print(f'    particles: {n_total} total | MPM: {n_active_mpm}+{n_inactive_mpm} (active+inactive) | XPBD: {n_total_xpbd} ({n_sleeping_xpbd} sleeping, {sleep_pct:.1f}%)')
 
         # Render/save if needed
         nextRenderTime, maxStress = check_render_save(
@@ -742,23 +775,51 @@ for bigStep in range(restart_bigStep, sim.bigSteps):
             sim.t += sim.dtxpbd
             counter += 1
             
-            # Check for sleep-based early termination (counts already computed by sleepParticles in xpbdSimulationStep)
+            # Check for sleep-based early termination
             if sim.xpbd_sleep_termination_ratio < 1.0:
-                total_xpbd = sim.numTotalXPBD.numpy()[0]
-                sleeping_xpbd = sim.numSleepingXPBD.numpy()[0]
+                # Sleep stats already computed by sleepParticles kernel in xpbdSimulationStep
+                n_total_xpbd = sim.numTotalXPBD.numpy()[0]
+                n_sleeping_xpbd = sim.numSleepingXPBD.numpy()[0]
                 
-                if total_xpbd > 0:
-                    sleep_ratio = sleeping_xpbd / total_xpbd
+                if n_total_xpbd > 0:
+                    sleep_ratio = n_sleeping_xpbd / n_total_xpbd
                     if sleep_ratio >= sim.xpbd_sleep_termination_ratio:
-                        print(f"    Early termination: {sleeping_xpbd}/{total_xpbd} ({sleep_ratio*100:.1f}%) XPBD particles asleep")
+                        print(f"    Early termination: {n_sleeping_xpbd}/{n_total_xpbd} ({sleep_ratio*100:.1f}%) XPBD particles asleep")
                         xpbd_phase_terminated_early = True
                         break
             
             if np.mod(xpbd_counter, 100) == 0:
-                total_xpbd = sim.numTotalXPBD.numpy()[0]
-                sleeping_xpbd = sim.numSleepingXPBD.numpy()[0]
-                sleep_pct = (sleeping_xpbd / total_xpbd * 100) if total_xpbd > 0 else 0.0
-                print(f'    XPBD Step: {xpbd_counter}/{sim.xpbdOnlySteps}, simulationTime: {sim.t:.4f}s, deltaRealTime: +{time.time()-stepStartTime:.4f}s, realTime: {time.time()-startTime:.4f}s, sleeping%: {sleep_pct:.2f}%')
+                # Count particles by type
+                sim.numActiveMPM.zero_()
+                sim.numActiveXPBD.zero_()
+                sim.numInactiveMPM.zero_()
+                sim.numInactiveXPBD.zero_()
+                wp.launch(
+                    kernel=simulationRoutines.countParticlesByType,
+                    dim=sim.nPoints,
+                    inputs=[
+                        sim.activeLabel,
+                        sim.materialLabel,
+                        sim.numActiveMPM,
+                        sim.numActiveXPBD,
+                        sim.numInactiveMPM,
+                        sim.numInactiveXPBD
+                    ],
+                    device=device
+                )
+                n_active_mpm = sim.numActiveMPM.numpy()[0]
+                n_active_xpbd = sim.numActiveXPBD.numpy()[0]
+                n_inactive_mpm = sim.numInactiveMPM.numpy()[0]
+                n_inactive_xpbd = sim.numInactiveXPBD.numpy()[0]
+                n_total = n_active_mpm + n_active_xpbd + n_inactive_mpm + n_inactive_xpbd
+                
+                # Sleep stats from sleepParticles kernel (already computed in xpbdSimulationStep)
+                n_total_xpbd = sim.numTotalXPBD.numpy()[0]
+                n_sleeping_xpbd = sim.numSleepingXPBD.numpy()[0]
+                sleep_pct = (n_sleeping_xpbd / n_total_xpbd * 100) if n_total_xpbd > 0 else 0.0
+                
+                print(f'    XPBD Step: {xpbd_counter}/{sim.xpbdOnlySteps}, t: {sim.t:.4f}s, Δt_real: +{time.time()-stepStartTime:.4f}s, t_real: {time.time()-startTime:.4f}s')
+                print(f'      particles: {n_total} total | MPM: {n_active_mpm}+{n_inactive_mpm} | XPBD: {n_total_xpbd} ({n_sleeping_xpbd} sleeping, {sleep_pct:.1f}%)')
             
             nextRenderTime, maxStress = check_render_save(
                 sim, mpm, xpbd, args, bigStep, counter, nextRenderTime, sim.dtxpbd,

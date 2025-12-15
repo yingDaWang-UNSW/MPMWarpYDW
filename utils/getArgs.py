@@ -25,10 +25,11 @@ def get_args():
     parser.add_argument("--bigStepDuration", type=float, default=10.0, help="Maximum duration of combined MPM+XPBD phase in seconds")
     parser.add_argument("--xpbdOnlyDuration", type=float, default=0.0, help="Duration of XPBD-only phase after combined phase (seconds). Set to 0 to disable.")
     parser.add_argument("--bigSteps", type=int, default=100, help="Number of big steps (outer loop iterations)")
-    parser.add_argument("--residualThreshold", type=float, default=5e-1, help="Residual threshold for convergence")
-    parser.add_argument("--damage_stall_threshold", type=float, default=0, help="If mean damage change per step falls below this, terminate combined phase early")
-    parser.add_argument("--damage_stall_steps", type=int, default=100, help="Number of consecutive steps below damage_stall_threshold to trigger early termination")
-    parser.add_argument("--xpbd_sleep_termination_ratio", type=float, default=1, help="Terminate XPBD-only phase early if this fraction of XPBD particles are asleep (0-1). Set to 1.0 to disable.")
+    # Termination criteria
+    parser.add_argument("--residualThreshold", type=float, default=1e-8, help="Velocity residual convergence threshold")
+    parser.add_argument("--damage_stall_threshold", type=float, default=1e-9, help="Mean damage change threshold for early termination")
+    parser.add_argument("--damage_stall_duration", type=float, default=0.1, help="Duration (seconds) below damage threshold to trigger early termination")
+    parser.add_argument("--xpbd_sleep_termination_ratio", type=float, default=0.95, help="Ratio of sleeping XPBD particles to trigger early termination of XPBD-only phase (0-1). Set to 1.0 to disable.")
 
     # Damping & integration
     parser.add_argument("--rpic_damping", type=float, default=0.2, help="Damping for P2G transfer")
