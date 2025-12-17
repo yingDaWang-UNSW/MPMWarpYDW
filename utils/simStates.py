@@ -66,6 +66,10 @@ class SimState:
         self.numActiveXPBD = wp.zeros(shape=1, dtype=int, device=device)
         self.numInactiveMPM = wp.zeros(shape=1, dtype=int, device=device)
         self.numInactiveXPBD = wp.zeros(shape=1, dtype=int, device=device)
+        
+        # Scratch arrays for GPU reductions (sum, mean, etc.)
+        self.scratchFloat = wp.zeros(shape=1, dtype=float, device=device)
+        self.scratchInt = wp.zeros(shape=1, dtype=int, device=device)
 
 class MPMState:
     """MPM-specific state variables"""

@@ -646,7 +646,7 @@ for bigStep in range(restart_bigStep, sim.bigSteps):
     minSteps = 1000  # minimum steps to ensure initial conditions are met
     
     # Damage tracking for early termination
-    prev_mean_damage = np.mean(mpm.particle_damage.numpy())
+    prev_mean_damage = simulationRoutines.compute_mean_gpu(mpm.particle_damage, sim, device, filtered=True)
     damage_stall_counter = 0
     damage_stall_steps = int(sim.damage_stall_duration / sim.dt)  # Convert duration to steps
     combined_phase_terminated_early = False
@@ -697,8 +697,8 @@ for bigStep in range(restart_bigStep, sim.bigSteps):
         counter=counter+1
         sim.t += sim.dt
         
-        # Track damage accumulation for early termination
-        current_mean_damage = np.mean(mpm.particle_damage.numpy())
+        # Track damage accumulation for early termination (GPU-based mean)
+        current_mean_damage = simulationRoutines.compute_mean_gpu(mpm.particle_damage, sim, device, filtered=True)
         damage_change = current_mean_damage - prev_mean_damage
         if damage_change < sim.damage_stall_threshold and counter > minSteps:
             damage_stall_counter += 1
@@ -866,21 +866,21 @@ for bigStep in range(restart_bigStep, sim.bigSteps):
     
     # when convergence is reached, reduce the yield stress: a function of damage in some spatially varying way
 
-    wp.launch(
-        kernel=mpmRoutines.creep_by_damage_with_baseline,
-        dim=sim.nPoints,
-        inputs=[
-            sim.materialLabel,
-            mpm.particle_damage,
-            mpm.ys,
-            mpm.ys_base,
-            counter*sim.dt,         # or sim.dt * sim.mpmStepsPerXpbdStep
-            0.0,           # base creep rate A_base (undamaged)
-            1e5,           # damage-based creep A_damage
-            1.0            # damage exponent beta
-        ],
-        device=device
-    )
+    # wp.launch(
+    #     kernel=mpmRoutines.creep_by_damage_with_baseline,
+    #     dim=sim.nPoints,
+    #     inputs=[
+    #         sim.materialLabel,
+    #         mpm.particle_damage,
+    #         mpm.ys,
+    #         mpm.ys_base,
+    #         counter*sim.dt,         # or sim.dt * sim.mpmStepsPerXpbdStep
+    #         0.0,           # base creep rate A_base (undamaged)
+    #         1e5,           # damage-based creep A_damage
+    #         1.0            # damage exponent beta
+    #     ],
+    #     device=device
+    # )
 
 # ========== Finalize Simulation ==========
 print(f"\nSimulation complete.")

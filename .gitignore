@@ -14,3 +14,4 @@ benchmarks/cavingBenchmark/output*
 benchmarks/*/*.h5
 benchmarks/*/*.vtp
 benchmarks/dynamicBenchmark/output*
+benchmarks/tunnelBenchmark/output*

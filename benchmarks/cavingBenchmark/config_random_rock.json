@@ -9,12 +9,12 @@
   "dt": 0,
   "dtxpbd": 1e-2,
   "bigStepDuration": 10,
-  "xpbdOnlyDuration": 50,
+  "xpbdOnlyDuration": 490,
   "bigSteps": 100,
   "residualThreshold": 1e-6,
   "damage_stall_threshold": 1e-6,
-  "damage_stall_duration": 0.5,
-  "xpbd_sleep_termination_ratio": 0.99,
+  "damage_stall_duration": 0.1,
+  "xpbd_sleep_termination_ratio": 0.90,
 
   "rpic_damping": 0.2,
   "grid_v_damping_scale": 0.995,
@@ -23,7 +23,7 @@
   "render": 0,
   "render_interval": 15,
   "saveFlag": 1,
-  "outputFolder": "./benchmarks/cavingBenchmark/outputWeakSeismic/",
+  "outputFolder": "./benchmarks/cavingBenchmark/outputWeakNoCreep/",
   "domainFile": "./benchmarks/cavingBenchmark/random_rock_domain_250x250x250_hole50_weak.h5",
   "grid_padding": 10.0,
   "grid_particle_spacing_scale": 2.0,
@@ -45,7 +45,7 @@
   "K0": 0.5,
   "z_top": null,
   "initialise_geostatic": 1,
-  "gravity_pulse_factor": 2,
+  "gravity_pulse_factor": 1,
   "gravity_pulse_duration": 1,
   
   "boundaryCondition": "friction",
@@ -70,6 +70,6 @@
   "swellingActivationFactor": 2.0,
   "swellingMaxFactor": 4.0,
   
-  "particle_v_max": 10.0,
+  "particle_v_max": 1e9,
   "color_mode": "damage"
 }

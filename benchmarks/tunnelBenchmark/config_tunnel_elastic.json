@@ -1,0 +1,73 @@
+{
+  "_comment_1": "Tunnel benchmark for Kirsch analytical solution validation",
+  "_comment_2": "Elastic-only simulation (very high yield stress)",
+  "_comment_3": "Uses geostatic initialization for far-field stress state",
+  "_comment_4": "Compare hoop stress at tunnel wall to Kirsch solution",
+  
+  "dt": 0,
+  "dtxpbd": 1e-2,
+  "bigStepDuration": 5.0,
+  "xpbdOnlyDuration": 0,
+  "bigSteps": 1,
+  "residualThreshold": 1e-6,
+  "damage_stall_threshold": 1e-12,
+  "damage_stall_duration": 1.0,
+
+  "rpic_damping": 0.3,
+  "grid_v_damping_scale": 0.99,
+  "update_cov": 1,
+  
+  "render": 0,
+  "render_interval": 0.1,
+  "saveFlag": 1,
+  "outputFolder": "./benchmarks/tunnelBenchmark/output_elastic/",
+  "domainFile": "./benchmarks/tunnelBenchmark/tunnel_domain_elastic.h5",
+  "grid_padding": 5.0,
+  "grid_particle_spacing_scale": 2.0,
+  "boundary_padding_mask": "000000",
+  
+  "density": 2600.0,
+  "E": 10e9,
+  "nu": 0.25,
+  "constitutive_model": 0,
+  "ys": 1e20,
+  "alpha": 0.0,
+  "hardening": 0.0,
+  "softening": 0.0,
+  "eta_shear": 1e7,
+  "eta_bulk": 1e7,
+  "volumetric_locking_correction": 0,
+  
+  "gravity": -9.81,
+  "K0": 0.5,
+  "z_top": 200.0,
+  "initialise_geostatic": 1,
+  "gravity_pulse_factor": 1.0,
+  "gravity_pulse_duration": 0.0,
+  
+  "boundaryCondition": "friction",
+  "boundFriction": 0.0,
+  "boundRestitution": 0,
+  "eff": 0,
+  "strainCriteria": 1.0,
+  
+  "xpbd_relaxation": 1.0,
+  "xpbd_mpm_coupling_strength": 0.0,
+  "mpm_contact_transition_lock": 0,
+  "dynamicParticleFriction": 0.3,
+  "staticVelocityThreshold": 1e-5,
+  "staticParticleFriction": 0.5,
+  "xpbd_iterations": 4,
+  "particle_cohesion": 0.0,
+  "sleepThreshold": 0.5,
+  "xpbd_sleep_termination_ratio": 1.0,
+
+  "xpbd_deactivation_z_datum": null,
+  
+  "swellingRatio": 0.0,
+  "swellingActivationFactor": 0.0,
+  "swellingMaxFactor": 1.0,
+  
+  "particle_v_max": 10.0,
+  "color_mode": "stress"
+}

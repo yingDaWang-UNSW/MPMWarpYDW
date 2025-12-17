@@ -544,3 +544,93 @@ def countParticlesByType(
             wp.atomic_add(numActiveMPM, 0, 1)
         else:
             wp.atomic_add(numInactiveMPM, 0, 1)
+
+
+@wp.kernel
+def sum_float_array(
+    arr: wp.array(dtype=float),
+    result: wp.array(dtype=float),
+):
+    """Sum all elements of a float array using atomic add."""
+    p = wp.tid()
+    wp.atomic_add(result, 0, arr[p])
+
+
+@wp.kernel
+def sum_float_array_active(
+    arr: wp.array(dtype=float),
+    activeLabel: wp.array(dtype=wp.int32),
+    result: wp.array(dtype=float),
+    count: wp.array(dtype=int),
+):
+    """Sum elements of a float array only for active particles."""
+    p = wp.tid()
+    if activeLabel[p] == 1:
+        wp.atomic_add(result, 0, arr[p])
+        wp.atomic_add(count, 0, 1)
+
+
+@wp.kernel
+def sum_float_array_by_material(
+    arr: wp.array(dtype=float),
+    materialLabel: wp.array(dtype=wp.int32),
+    result_mpm: wp.array(dtype=float),
+    result_xpbd: wp.array(dtype=float),
+    count_mpm: wp.array(dtype=int),
+    count_xpbd: wp.array(dtype=int),
+):
+    """Sum elements by material type (MPM vs XPBD)."""
+    p = wp.tid()
+    val = arr[p]
+    
+    if materialLabel[p] == 2:  # XPBD
+        wp.atomic_add(result_xpbd, 0, val)
+        wp.atomic_add(count_xpbd, 0, 1)
+    else:  # MPM (label 0 or 1)
+        wp.atomic_add(result_mpm, 0, val)
+        wp.atomic_add(count_mpm, 0, 1)
+
+
+def compute_mean_gpu(arr, sim, device, filtered=True):
+    """
+    Compute mean of a float array on GPU.
+    
+    Parameters
+    ----------
+    arr : wp.array(dtype=float)
+        Array to average
+    sim : SimState
+        Simulation state (for scratch arrays and activeLabel)
+    device : str
+        Warp device
+    filtered : bool
+        If True, only average active particles
+    
+    Returns
+    -------
+    float
+        Mean value
+    """
+    sim.scratchFloat.zero_()
+    sim.scratchInt.zero_()
+    
+    if filtered:
+        wp.launch(
+            kernel=sum_float_array_active,
+            dim=sim.nPoints,
+            inputs=[arr, sim.activeLabel, sim.scratchFloat, sim.scratchInt],
+            device=device
+        )
+        total = sim.scratchFloat.numpy()[0]
+        count = sim.scratchInt.numpy()[0]
+    else:
+        wp.launch(
+            kernel=sum_float_array,
+            dim=sim.nPoints,
+            inputs=[arr, sim.scratchFloat],
+            device=device
+        )
+        total = sim.scratchFloat.numpy()[0]
+        count = sim.nPoints
+    
+    return total / count if count > 0 else 0.0

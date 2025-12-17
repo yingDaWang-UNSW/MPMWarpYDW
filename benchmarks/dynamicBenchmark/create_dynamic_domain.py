@@ -105,7 +105,7 @@ def create_dynamic_domain():
     # Low yield stress - will transition to XPBD on impact
     base_density = 2500.0  # kg/m³ (soil-like)
     base_E = 1e8  # Pa (100 MPa - moderately stiff)
-    base_ys = 1e7  # Pa (100 kPa - weak, will yield on impact)
+    base_ys = 1e6  # Pa (100 kPa - weak, will yield on impact)
     
     density[base_mask] = base_density
     E[base_mask] = base_E
@@ -190,9 +190,9 @@ def create_dynamic_domain():
         print("Note: May need stronger block or weaker base for yielding")
     
     # --- Save HDF5 ---
-    output_h5 = "dynamic_domain.h5"
-    output_vtp = "dynamic_domain.vtp"
-    
+    output_h5 = "./benchmarks/dynamicBenchmark/dynamic_domain_strongbase.h5"
+    output_vtp = "./benchmarks/dynamicBenchmark/dynamic_domain_strongbase.vtp"
+
     print(f"\n{'='*70}")
     print(f"SAVING OUTPUT FILES")
     print(f"{'='*70}")

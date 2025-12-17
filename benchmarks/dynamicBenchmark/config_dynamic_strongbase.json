@@ -5,7 +5,7 @@
   
   "dt": 0,
   "dtxpbd": 0.01,
-  "bigStepDuration":20.0,
+  "bigStepDuration": 20.0,
   "xpbdOnlyDuration": 0.0,
   "bigSteps": 1,
   "residualThreshold": 1e-7,
@@ -22,12 +22,12 @@
   "render_interval": 0.1,
   "color_mode": "effective_ys",
   "saveFlag": 1,
-  "outputFolder": "./benchmarks/dynamicBenchmark/output/",
+  "outputFolder": "./benchmarks/dynamicBenchmark/output_strongbase/",
   
-  "domainFile": "./benchmarks/dynamicBenchmark/dynamic_domain.h5",
+  "domainFile": "./benchmarks/dynamicBenchmark/dynamic_domain_strongbase.h5",
   "grid_padding": 15,
   "grid_particle_spacing_scale": 2.0,
-  "boundary_padding_mask": "111101",
+  "boundary_padding_mask": "111111",
   
   "density": 2500.0,
   "E": 1e8,
@@ -49,7 +49,7 @@
   "gravity_pulse_duration": 0.0,
   
   "boundaryCondition": "friction",
-  "boundFriction": 0.2,
+  "boundFriction": 0,
   "boundRestitution": 0,
   "eff": 0.0,
   "strainCriteria": 0.01,
