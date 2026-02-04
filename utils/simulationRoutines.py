@@ -131,7 +131,7 @@ def mpmSimulationStep(sim, mpm, xpbd, device,):
                 mpm.gridDims[0],
                 mpm.gridDims[1],
                 mpm.gridDims[2],
-                mpm.boundFriction,  # Friction coefficient μ
+                mpm.boundFriction,  # Friction coefficient mu
                 sim.dt,  # Time step
                 wp.abs(sim.gravity[2]),  # Gravity magnitude
                 mpm.boundaryPadding
@@ -148,7 +148,7 @@ def mpmSimulationStep(sim, mpm, xpbd, device,):
                 mpm.gridDims[0],
                 mpm.gridDims[1],
                 mpm.gridDims[2],
-                mpm.boundFriction,  # Friction coefficient μ
+                mpm.boundFriction,  # Friction coefficient mu
                 sim.dt,  # Time step
                 wp.abs(sim.gravity[2]),  # Gravity magnitude
                 mpm.boundaryPadding
@@ -166,7 +166,7 @@ def mpmSimulationStep(sim, mpm, xpbd, device,):
                 mpm.gridDims[1],
                 mpm.gridDims[2],
                 mpm.boundRestitution,  # Coefficient of restitution
-                mpm.boundFriction,  # Friction coefficient μ for tangential directions
+                mpm.boundFriction,  # Friction coefficient mu for tangential directions
                 sim.dt,  # Time step
                 wp.abs(sim.gravity[2]),  # Gravity magnitude
                 mpm.boundaryPadding
@@ -183,6 +183,45 @@ def mpmSimulationStep(sim, mpm, xpbd, device,):
                 mpm.gridDims[0],
                 mpm.gridDims[1],
                 mpm.gridDims[2],
+                mpm.boundaryPadding
+            ],
+            device=device
+        )
+    elif mpm.boundaryCondition == "plane_strain_y":
+        # Plane-strain boundary condition: fixed Y displacement (eps_yy = 0)
+        # X and Z remain free-slip (roller), Y is fixed at boundaries only
+        # NOTE: This only fixes v_y at Y boundaries - may not give true plane strain
+        wp.launch(
+            kernel=mpmRoutines.collideBoundsPlaneStrainY,
+            dim=mpm.gridDims,
+            inputs=[
+                mpm.grid_v_out,
+                mpm.gridDims[0],
+                mpm.gridDims[1],
+                mpm.gridDims[2],
+                mpm.boundFriction,  # Friction coefficient mu (for X/Z boundaries)
+                sim.dt,  # Time step
+                wp.abs(sim.gravity[2]),  # Gravity magnitude
+                mpm.boundaryPadding
+            ],
+            device=device
+        )
+    
+    elif mpm.boundaryCondition == "plane_strain_y_global":
+        # TRUE plane-strain boundary condition: v_y = 0 EVERYWHERE (eps_yy = 0 throughout domain)
+        # This enforces plane strain globally, not just at boundaries
+        # X and Z boundaries remain free-slip (roller)
+        wp.launch(
+            kernel=mpmRoutines.collideBoundsPlaneStrainYGlobal,
+            dim=mpm.gridDims,
+            inputs=[
+                mpm.grid_v_out,
+                mpm.gridDims[0],
+                mpm.gridDims[1],
+                mpm.gridDims[2],
+                mpm.boundFriction,  # Friction coefficient mu (for X/Z boundaries)
+                sim.dt,  # Time step
+                wp.abs(sim.gravity[2]),  # Gravity magnitude
                 mpm.boundaryPadding
             ],
             device=device

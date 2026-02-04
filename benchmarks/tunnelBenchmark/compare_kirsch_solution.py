@@ -260,8 +260,13 @@ def analyze_tunnel_stress(positions, stress, tunnel_center, tunnel_radius,
     a = tunnel_radius
     
     # Filter particles by Y coordinate (for plane strain analysis)
+    # Use tight tolerance to select only the central Y-slice
     if y_slice_tolerance is not None:
         y_mask = np.abs(positions[:, 1] - yc) < y_slice_tolerance
+        # Report unique Y values in selection
+        y_unique = np.unique(np.round(positions[y_mask, 1], 2))
+        print(f"  Y-slice filter: tolerance={y_slice_tolerance:.2f}m, selected {np.sum(y_mask)} particles")
+        print(f"    Unique Y values in slice: {y_unique}")
     else:
         y_mask = np.ones(len(positions), dtype=bool)
     
@@ -276,8 +281,11 @@ def analyze_tunnel_stress(positions, stress, tunnel_center, tunnel_radius,
     # θ=0 is crown/invert (top/bottom), θ=90° is springline (sides)
     theta = np.arctan2(dx, dz)  # arctan2(x, z) measures from +Z axis
     
-    # Filter particles near tunnel (1a to 5a radius)
-    near_tunnel_mask = (r >= a * 1.05) & (r <= a * 5.0)
+    # Filter particles near tunnel (1.2a to 5a radius)
+    # Exclude very close particles (r < 1.2a) where boundary artifacts dominate
+    r_min_factor = 1.2  # Skip the first ~2 particle layers from wall
+    near_tunnel_mask = (r >= a * r_min_factor) & (r <= a * 5.0)
+    print(f"  Radial filter: {r_min_factor}a to 5.0a, selected {np.sum(near_tunnel_mask)} particles for analysis")
     
     r_near = r[near_tunnel_mask]
     theta_near = theta[near_tunnel_mask]

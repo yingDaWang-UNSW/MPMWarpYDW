@@ -89,43 +89,54 @@ def compare_three_resolutions(lores_dir, hires_dir, adaptive_dir, output_dir,
     print(f"  σ_h = {sigma_h/1e6:.3f} MPa")
     
     # Analyze each available simulation
+    # Use tight Y-slice to get only the central layer of particles
+    # This reduces scatter from multiple Y-layers having slightly different stress states
     results = {}
     
     if lores_file:
         print("\nAnalyzing LOW-RESOLUTION simulation (1.0m uniform grid)...")
         pos, stress = read_vtp_file(lores_file)
+        # For 1.0m spacing, use tolerance of 0.6m to get single central layer
+        y_tol = 0.6  # Slightly more than half the spacing
         results['lores'] = analyze_tunnel_stress(
             pos, stress, tunnel_center, tunnel_radius,
-            sigma_v, sigma_h, y_slice_tolerance=2.5,
+            sigma_v, sigma_h, y_slice_tolerance=y_tol,
             density=density, gravity=gravity, z_top=z_top, K0=K0
         )
         results['lores']['name'] = 'Low-res (1.0m grid)'
         results['lores']['color'] = 'blue'
         results['lores']['marker'] = 'o'
+        results['lores']['spacing'] = 1.0
     
     if hires_file:
         print("\nAnalyzing HIGH-RESOLUTION simulation (0.5m uniform grid)...")
         pos, stress = read_vtp_file(hires_file)
+        # For 0.5m spacing, use tolerance of 0.3m to get single central layer
+        y_tol = 0.3
         results['hires'] = analyze_tunnel_stress(
             pos, stress, tunnel_center, tunnel_radius,
-            sigma_v, sigma_h, y_slice_tolerance=2.5,
+            sigma_v, sigma_h, y_slice_tolerance=y_tol,
             density=density, gravity=gravity, z_top=z_top, K0=K0
         )
         results['hires']['name'] = 'High-res (0.5m grid)'
         results['hires']['color'] = 'red'
         results['hires']['marker'] = 's'
+        results['hires']['spacing'] = 0.5
     
     if adaptive_file:
         print("\nAnalyzing VERY HIGH-RES simulation (0.4m uniform grid)...")
         pos, stress = read_vtp_file(adaptive_file)
+        # For 0.4m spacing, use tolerance of 0.25m to get single central layer
+        y_tol = 0.25
         results['adaptive'] = analyze_tunnel_stress(
             pos, stress, tunnel_center, tunnel_radius,
-            sigma_v, sigma_h, y_slice_tolerance=2.5,
+            sigma_v, sigma_h, y_slice_tolerance=y_tol,
             density=density, gravity=gravity, z_top=z_top, K0=K0
         )
         results['adaptive']['name'] = 'VHires (0.4m grid)'
         results['adaptive']['color'] = 'green'
         results['adaptive']['marker'] = '^'
+        results['adaptive']['spacing'] = 0.4
     
     # Print summary table
     print("\n" + "=" * 90)
@@ -202,7 +213,8 @@ def plot_radial_3way(results, angle_deg, tunnel_radius, density, gravity,
     theta_ana = np.radians(angle_deg)
     
     # Analytical profile with depth-varying stress
-    r_ana = np.linspace(a, 5*a, 100)
+    # Start from 1.2a to match the analysis filter
+    r_ana = np.linspace(1.2*a, 5*a, 100)
     z_ana = zc + r_ana * np.cos(theta_ana)
     depth_ana = z_top - z_ana
     sigma_v_ana = density * gravity * depth_ana
@@ -239,7 +251,7 @@ def plot_radial_3way(results, angle_deg, tunnel_radius, density, gravity,
     ax.set_title(f'Radial Stress (θ = {angle_deg}°)', fontsize=14)
     ax.legend(fontsize=9, loc='best')
     ax.grid(True, alpha=0.3)
-    ax.set_xlim(1, 5)
+    ax.set_xlim(1.2, 5)
     
     # Tangential stress
     ax = axes[1]
@@ -256,7 +268,7 @@ def plot_radial_3way(results, angle_deg, tunnel_radius, density, gravity,
     ax.set_title(f'Tangential (Hoop) Stress (θ = {angle_deg}°)', fontsize=14)
     ax.legend(fontsize=9, loc='best')
     ax.grid(True, alpha=0.3)
-    ax.set_xlim(1, 5)
+    ax.set_xlim(1.2, 5)
     
     plt.suptitle(f'3-Way Resolution Comparison at θ = {angle_deg}°', fontsize=14, fontweight='bold')
     plt.tight_layout()
@@ -274,20 +286,21 @@ def plot_wall_stress_3way(results, tunnel_radius, sigma_v, sigma_h, output_path)
     theta_ana = np.linspace(0, 2*np.pi, 361)
     sigma_tt_wall = []
     for theta in theta_ana:
-        _, sig_tt, _ = kirsch_stress_polar(a * 1.05, theta, a, sigma_v, sigma_h)
+        # Use r=1.25a for analytical (center of the analysis zone 1.2a-1.3a)
+        _, sig_tt, _ = kirsch_stress_polar(a * 1.25, theta, a, sigma_v, sigma_h)
         sigma_tt_wall.append(sig_tt)
     sigma_tt_wall = np.array(sigma_tt_wall)
     
     fig, ax = plt.subplots(figsize=(12, 6))
     
     ax.plot(np.degrees(theta_ana), sigma_tt_wall/1e6, 'k-', linewidth=2.5, 
-            label='Kirsch analytical')
+            label='Kirsch analytical (r=1.25a)')
     
-    # Extract near-wall particles for each resolution
+    # Extract near-wall particles for each resolution (using 1.2a-1.5a zone)
     for key in ['lores', 'hires', 'adaptive']:
         if key in results:
             res = results[key]
-            wall_mask = (res['r'] < 1.3 * a) & (res['r'] > 1.0 * a)
+            wall_mask = (res['r'] < 1.5 * a) & (res['r'] >= 1.2 * a)
             if np.sum(wall_mask) > 0:
                 theta_wall = np.degrees(res['theta'][wall_mask])
                 stress_wall = res['sim_sigma_tt'][wall_mask] / 1e6
@@ -296,7 +309,7 @@ def plot_wall_stress_3way(results, tunnel_radius, sigma_v, sigma_h, output_path)
     
     ax.set_xlabel('Angle θ from vertical [degrees]', fontsize=12)
     ax.set_ylabel('Hoop stress σ_θθ [MPa]', fontsize=12)
-    ax.set_title('Hoop Stress at Tunnel Wall (r ≈ 1.0-1.3a)', fontsize=14)
+    ax.set_title('Hoop Stress Near Tunnel Wall (r ≈ 1.2-1.5a)', fontsize=14)
     ax.legend(fontsize=10)
     ax.grid(True, alpha=0.3)
     ax.set_xlim(0, 360)

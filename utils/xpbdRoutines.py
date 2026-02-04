@@ -210,7 +210,7 @@ def my_solve_particle_particle_contacts(
                         vn = wp.dot(n, vrel)
                         if wp.abs(vn)<staticParticleVelocityThresholdRatio*radius:
                             k_mu=staticParticleFriction
-                        vt = v - n * vn
+                        vt = vrel - n * vn
                         lambda_f = wp.max(k_mu * lambda_n, -wp.length(vt) * dt)
                         delta_f = wp.normalize(vt) * lambda_f
                         delta += (delta_f - delta_n) / denom * w1

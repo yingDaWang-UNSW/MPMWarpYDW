@@ -63,38 +63,38 @@ def initialize_geostatic_F(
     Initialize deformation gradient F to represent geostatic stress state.
     
     For an isotropic elastic material under geostatic stress:
-    σ_v = ρgh (vertical)
-    σ_h = K0 * σ_v (horizontal)
+    sig_v = rho*g*h (vertical)
+    sig_h = K0 * sig_v (horizontal)
     
-    We compute the strain that would produce this stress, then F = exp(ε).
+    We compute the strain that would produce this stress, then F = exp(eps).
     This way, the material "remembers" it's prestressed.
     """
     tid = wp.tid()
     z = particle_x[tid][2]
     depth = z_top - z
     
-    # Target stresses (Kirchhoff stress for small strain ≈ Cauchy stress)
-    # Compression = negative, so σ_v = -ρgh (negative at depth)
+    # Target stresses (Kirchhoff stress for small strain approx Cauchy stress)
+    # Compression = negative, so sig_v = -rho*g*h (negative at depth)
     sigma_v = -density[tid] * gravity * depth
     sigma_h = K0 * sigma_v
     
-    # For linear elasticity: σ = λ*tr(ε)*I + 2μ*ε
-    # Solve for strains given target stresses (σ_xx = σ_yy = σ_h, σ_zz = σ_v)
-    # σ_h = λ*(ε_xx + ε_yy + ε_zz) + 2μ*ε_xx
-    # σ_h = λ*(ε_xx + ε_yy + ε_zz) + 2μ*ε_yy
-    # σ_v = λ*(ε_xx + ε_yy + ε_zz) + 2μ*ε_zz
+    # For linear elasticity: sig = lam*tr(eps)*I + 2*mu*eps
+    # Solve for strains given target stresses (sig_xx = sig_yy = sig_h, sig_zz = sig_v)
+    # sig_h = lam*(eps_xx + eps_yy + eps_zz) + 2*mu*eps_xx
+    # sig_h = lam*(eps_xx + eps_yy + eps_zz) + 2*mu*eps_yy
+    # sig_v = lam*(eps_xx + eps_yy + eps_zz) + 2*mu*eps_zz
     
-    # Assuming ε_xx = ε_yy (horizontal isotropy):
-    # σ_h = λ*(2ε_h + ε_v) + 2μ*ε_h
-    # σ_v = λ*(2ε_h + ε_v) + 2μ*ε_v
+    # Assuming eps_xx = eps_yy (horizontal isotropy):
+    # sig_h = lam*(2*eps_h + eps_v) + 2*mu*eps_h
+    # sig_v = lam*(2*eps_h + eps_v) + 2*mu*eps_v
     
     # Solve this 2x2 system:
     mu_p = mu[tid]
     lam_p = lam[tid]
     
-    # Coefficient matrix for [ε_h, ε_v]:
-    # [2λ + 2μ,    λ   ] [ε_h]   [σ_h]
-    # [2λ,       λ + 2μ] [ε_v] = [σ_v]
+    # Coefficient matrix for [eps_h, eps_v]:
+    # [2*lam + 2*mu,    lam   ] [eps_h]   [sig_h]
+    # [2*lam,       lam + 2*mu] [eps_v] = [sig_v]
     
     a11 = 2.0 * lam_p + 2.0 * mu_p
     a12 = lam_p
@@ -112,10 +112,89 @@ def initialize_geostatic_F(
         eps_v = 0.0
     
     # Logarithmic strain (since we use multiplicative elastoplasticity)
-    # F = exp(ε) for small strain, or for diagonal ε:
+    # F = exp(eps) for small strain, or for diagonal eps:
     F_xx = wp.exp(eps_h)
     F_yy = wp.exp(eps_h)
     F_zz = wp.exp(eps_v)
+    
+    particle_F[tid] = wp.mat33(
+        F_xx, 0.0, 0.0,
+        0.0, F_yy, 0.0,
+        0.0, 0.0, F_zz
+    )
+
+
+@wp.kernel
+def initialize_geostatic_F_planestrain(
+    particle_x: wp.array(dtype=wp.vec3),
+    particle_F: wp.array(dtype=wp.mat33),
+    mu: wp.array(dtype=float),
+    lam: wp.array(dtype=float),
+    density: wp.array(dtype=float),
+    g: float,
+    z_top: float,
+    K0: float
+):
+    """
+    Initialize deformation gradient for plane strain geostatic conditions.
+    
+    For plane strain in Y direction:
+      eps_yy = 0  (no strain in Y)
+      sigma_yy = nu * (sigma_xx + sigma_zz)  (plane strain condition)
+    
+    This differs from standard geostatic where sigma_yy = K0 * sigma_v.
+    
+    For geostatic stress at depth z:
+      sigma_v = sigma_zz = -rho * g * (z_top - z)  (vertical, negative = compression)
+      sigma_h = sigma_xx = K0 * sigma_v            (horizontal)
+      sigma_yy = nu * (sigma_xx + sigma_zz)        (plane strain constraint)
+    
+    With linear elasticity:
+      eps_zz = [sigma_zz - nu*(sigma_xx + sigma_yy)] / E
+      eps_xx = [sigma_xx - nu*(sigma_yy + sigma_zz)] / E
+      eps_yy = 0 (by definition of plane strain)
+    
+    F = exp(eps) for principal strains -> diag(exp(eps_xx), exp(eps_yy), exp(eps_zz))
+    """
+    tid = wp.tid()
+    
+    # Depth below top surface
+    z = particle_x[tid][2]
+    depth = z_top - z
+    
+    if depth > 0.0:
+        # Lame parameters to Young's modulus and Poisson's ratio
+        mu_val = mu[tid]
+        lam_val = lam[tid]
+        nu = lam_val / (2.0 * (lam_val + mu_val))  # Poisson's ratio
+        E = mu_val * (3.0 * lam_val + 2.0 * mu_val) / (lam_val + mu_val)  # Young's modulus
+        
+        # Geostatic stresses (compression negative)
+        sigma_v = -density[tid] * g * depth  # sigma_zz (vertical)
+        sigma_h = K0 * sigma_v  # sigma_xx (horizontal in X direction)
+        
+        # Plane strain constraint: eps_yy = 0 implies
+        # sigma_yy = nu * (sigma_xx + sigma_zz)
+        sigma_yy = nu * (sigma_h + sigma_v)
+        
+        # Compute strains using linear elasticity
+        # eps_xx = [sigma_xx - nu*(sigma_yy + sigma_zz)] / E
+        eps_xx = (sigma_h - nu * (sigma_yy + sigma_v)) / E
+        
+        # eps_yy = 0 by plane strain constraint
+        eps_yy = 0.0
+        
+        # eps_zz = [sigma_zz - nu*(sigma_xx + sigma_yy)] / E
+        eps_zz = (sigma_v - nu * (sigma_h + sigma_yy)) / E
+    else:
+        eps_xx = 0.0
+        eps_yy = 0.0
+        eps_zz = 0.0
+    
+    # Deformation gradient F = exp(eps) for diagonal strain tensor
+    F_xx = wp.exp(eps_xx)
+    F_yy = wp.exp(eps_yy)  # = 1.0 for plane strain
+    F_zz = wp.exp(eps_zz)
     
     particle_F[tid] = wp.mat33(
         F_xx, 0.0, 0.0,
@@ -272,11 +351,11 @@ def drucker_prager_return_mapping(
     # Modified yield stress due to damage
     sigma_eq = wp.length(tau_dev)
     # Add pressure effect to yield stress (Drucker-Prager-like)
-    # α controls pressure sensitivity (friction angle effect)
+    # alpha controls pressure sensitivity (friction angle effect)
     # Sign convention: compression = negative, so use MINUS to increase strength
-    # - Compression (p < 0): -α·p > 0 → increases yield stress
-    # - Tension (p > 0):     -α·p < 0 → decreases yield stress
-    # If α = 0, behaves like standard Von Mises
+    # - Compression (p < 0): -alpha*p > 0 -> increases yield stress
+    # - Tension (p > 0):     -alpha*p < 0 -> decreases yield stress
+    # If alpha = 0, behaves like standard Von Mises
     yield_eff = (1.0 - damage[p]) * (yield_stress[p] - alpha[p] * p_stress)
 
     if sigma_eq > yield_eff or yield_stress[p] < 0.0 or yield_eff < 0.0:
@@ -329,17 +408,17 @@ def drucker_prager_return_mapping(
             return F_trial
         
         # Plastic correction with non-associated flow for Drucker-Prager
-        # For associated flow (β = α): plastic flow parallel to yield surface
-        # For non-associated flow (β < α): different dilation angle
-        # β = 0: no volumetric plastic strain (incompressible plasticity)
-        # β = α: maximum dilatancy (associated flow)
+        # For associated flow (beta = alpha): plastic flow parallel to yield surface
+        # For non-associated flow (beta < alpha): different dilation angle
+        # beta = 0: no volumetric plastic strain (incompressible plasticity)
+        # beta = alpha: maximum dilatancy (associated flow)
         
         # Deviatoric correction (always present)
         epsilon_dev_correction = (delta_gamma / epsilon_dev_norm) * epsilon_dev
         
         # Volumetric correction (dilatancy) - only for Drucker-Prager
-        # For materials with α > 0, add volumetric plastic strain
-        # Typically β ≈ 0.2-0.5 * α for rocks/soils
+        # For materials with alpha > 0, add volumetric plastic strain
+        # Typically beta approx 0.2-0.5 * alpha for rocks/soils
         # beta = 0.0  # Could make this a material parameter
         # TODO: For proper dilatancy, uncomment and tune beta:
         beta = 0.3 * alpha[p]  # Dilation angle related to friction angle
@@ -506,7 +585,7 @@ def apply_xpbd_gravity_force_to_grid(
     """
     Transfer XPBD gravitational force to grid as momentum impulse.
     
-    This applies F = m_xpbd × g directly to grid velocity (as momentum), WITHOUT adding mass.
+    This applies F = m_xpbd * g directly to grid velocity (as momentum), WITHOUT adding mass.
     Result: Underlying MPM feels compression from XPBD weight, but no pulling
     when XPBD moves away (no persistent mass on grid).
     
@@ -518,7 +597,7 @@ def apply_xpbd_gravity_force_to_grid(
         # Compute gravitational force on this XPBD particle
         F_gravity = particle_mass[p] * gravity
         
-        # Momentum impulse: Δp = F × dt
+        # Momentum impulse: delta_p = F * dt
         momentum_impulse = F_gravity * dt
         
         # Distribute to grid using quadratic B-spline weights (same as P2G)
@@ -548,7 +627,7 @@ def apply_xpbd_gravity_force_to_grid(
                     weight = w[0, i] * w[1, j] * w[2, k]
                     
                     # Add momentum impulse (NOT mass!)
-                    # This affects grid velocity after normalization: Δv = Δp / m_grid
+                    # This affects grid velocity after normalization: delta_v = delta_p / m_grid
                     # When XPBD moves away, this force disappears (grid_v_in cleared next frame)
                     wp.atomic_add(grid_v_in, ix, iy, iz, weight * momentum_impulse)
 
@@ -751,8 +830,8 @@ def accumulate_cell_divergence(
     Phase 1 of volumetric locking correction: Accumulate velocity divergence to cells.
     
     For each MPM particle:
-    - Compute velocity divergence: ∇·v = tr(∇v) = tr(particle_C)
-    - Accumulate to cell: Σ(∇·v_p * V_p) and Σ(V_p)
+    - Compute velocity divergence: div(v) = tr(grad_v) = tr(particle_C)
+    - Accumulate to cell: sum(div_v_p * V_p) and sum(V_p)
     
     Cell is determined by particle position (integer cell index).
     """
@@ -765,7 +844,7 @@ def accumulate_cell_divergence(
         cell_z = wp.int(grid_pos[2])
         
         # Compute velocity divergence from particle_C (velocity gradient)
-        # ∇·v = ∂vx/∂x + ∂vy/∂y + ∂vz/∂z = tr(∇v)
+        # div(v) = dvx/dx + dvy/dy + dvz/dz = tr(grad_v)
         grad_v = particle_C[p]
         div_v = grad_v[0, 0] + grad_v[1, 1] + grad_v[2, 2]
         
@@ -792,9 +871,9 @@ def apply_volumetric_locking_correction(
     Phase 2 of volumetric locking correction: Apply corrected velocity gradient.
     
     The improved velocity gradient is:
-        ∇v_corrected = ∇v + (1/d) * ((∇·v)_cell - ∇·v_p) * I
+        grad_v_corrected = grad_v + (1/d) * ((div_v)_cell - div_v_p) * I
     
-    where d=3 (3D), (∇·v)_cell is the cell-averaged divergence, and I is identity.
+    where d=3 (3D), (div_v)_cell is the cell-averaged divergence, and I is identity.
     This replaces the particle's dilational component with the cell average while
     preserving the deviatoric (shear) component.
     """
@@ -822,7 +901,7 @@ def apply_volumetric_locking_correction(
         correction = (div_v_cell - div_v_p) / 3.0
         
         # Apply correction to diagonal (volumetric) components only
-        # ∇v_corrected = ∇v + correction * I
+        # grad_v_corrected = grad_v + correction * I
         identity_correction = wp.mat33(
             correction, 0.0, 0.0,
             0.0, correction, 0.0,
@@ -842,13 +921,13 @@ def apply_coulomb_friction(v: float, mu: float, dt: float, g: float) -> float:
         v: Velocity component (m/s)
         mu: Friction coefficient (dimensionless)
         dt: Time step (s)
-        g: Gravity magnitude (m/s²)
+        g: Gravity magnitude (m/s^2)
     
     Returns:
         Velocity after friction (m/s)
     
-    Coulomb friction force: F_friction = μ * N = μ * m * g
-    Velocity change: Δv = (F/m) * dt = μ * g * dt
+    Coulomb friction force: F_friction = mu * N = mu * m * g
+    Velocity change: delta_v = (F/m) * dt = mu * g * dt
     """
     if wp.abs(v) < 1e-12:
         return 0.0
@@ -866,9 +945,9 @@ def collideBounds(
     grid_dim_x: int,
     grid_dim_y: int,
     grid_dim_z: int,
-    friction_coefficient: float,  # μ (dimensionless)
+    friction_coefficient: float,  # mu (dimensionless)
     dt: float,  # Time step (s)
-    gravity_magnitude: float,  # |g| (m/s²)
+    gravity_magnitude: float,  # |g| (m/s^2)
     boundary_padding: int,  # Number of grid cells from boundary where BC applies
 ):
     grid_x, grid_y, grid_z = wp.tid()
@@ -910,6 +989,138 @@ def collideBounds(
         grid_v_out[grid_x, grid_y, grid_z] = wp.vec3(
             apply_coulomb_friction(v[0], friction_coefficient, dt, gravity_magnitude),
             apply_coulomb_friction(v[1], friction_coefficient, dt, gravity_magnitude),
+            0.0,  # Stop normal velocity
+        )
+
+
+@wp.kernel
+def collideBoundsPlaneStrainY(
+    grid_v_out: wp.array(dtype=wp.vec3, ndim=3),
+    grid_dim_x: int,
+    grid_dim_y: int,
+    grid_dim_z: int,
+    friction_coefficient: float,  # mu (dimensionless)
+    dt: float,  # Time step (s)
+    gravity_magnitude: float,  # |g| (m/s^2)
+    boundary_padding: int,  # Number of grid cells from boundary where BC applies
+):
+    """
+    Apply plane-strain boundary conditions with fixed Y displacement.
+    
+    For plane strain, we need eps_yy = 0, which requires v_y = 0 at Y boundaries.
+    Unlike free-slip (roller) boundaries that only prevent penetration,
+    this kernel fixes ALL Y velocity at Y boundaries.
+    
+    X and Z boundaries remain free-slip (roller) as usual.
+    """
+    grid_x, grid_y, grid_z = wp.tid()
+    v = grid_v_out[grid_x, grid_y, grid_z]
+
+    # X boundaries: free-slip (roller) - only stop penetrating normal velocity
+    if grid_x <= boundary_padding and v[0] < 0.0:
+        grid_v_out[grid_x, grid_y, grid_z] = wp.vec3(
+            0.0,  # Stop normal velocity
+            apply_coulomb_friction(v[1], friction_coefficient, dt, gravity_magnitude),
+            apply_coulomb_friction(v[2], friction_coefficient, dt, gravity_magnitude),
+        )
+    if grid_x >= grid_dim_x - boundary_padding and v[0] > 0.0:
+        grid_v_out[grid_x, grid_y, grid_z] = wp.vec3(
+            0.0,  # Stop normal velocity
+            apply_coulomb_friction(v[1], friction_coefficient, dt, gravity_magnitude),
+            apply_coulomb_friction(v[2], friction_coefficient, dt, gravity_magnitude),
+        )
+
+    # Y boundaries: FIXED displacement (plane strain) - ALL v_y = 0
+    if grid_y <= boundary_padding:
+        # At -Y boundary: fix v_y = 0 regardless of direction
+        v = grid_v_out[grid_x, grid_y, grid_z]  # Re-read in case X modified it
+        grid_v_out[grid_x, grid_y, grid_z] = wp.vec3(
+            v[0],  # Keep tangential
+            0.0,   # Fix Y velocity to zero (plane strain)
+            v[2],  # Keep tangential
+        )
+    if grid_y >= grid_dim_y - boundary_padding:
+        # At +Y boundary: fix v_y = 0 regardless of direction
+        v = grid_v_out[grid_x, grid_y, grid_z]  # Re-read in case X modified it
+        grid_v_out[grid_x, grid_y, grid_z] = wp.vec3(
+            v[0],  # Keep tangential
+            0.0,   # Fix Y velocity to zero (plane strain)
+            v[2],  # Keep tangential
+        )
+
+    # Z boundaries: free-slip (roller) - only stop penetrating normal velocity
+    if grid_z <= boundary_padding and v[2] < 0.0:
+        grid_v_out[grid_x, grid_y, grid_z] = wp.vec3(
+            apply_coulomb_friction(v[0], friction_coefficient, dt, gravity_magnitude),
+            apply_coulomb_friction(v[1], friction_coefficient, dt, gravity_magnitude),
+            0.0,  # Stop normal velocity
+        )
+    if grid_z >= grid_dim_z - boundary_padding and v[2] > 0.0:
+        grid_v_out[grid_x, grid_y, grid_z] = wp.vec3(
+            apply_coulomb_friction(v[0], friction_coefficient, dt, gravity_magnitude),
+            apply_coulomb_friction(v[1], friction_coefficient, dt, gravity_magnitude),
+            0.0,  # Stop normal velocity
+        )
+
+
+@wp.kernel
+def collideBoundsPlaneStrainYGlobal(
+    grid_v_out: wp.array(dtype=wp.vec3, ndim=3),
+    grid_dim_x: int,
+    grid_dim_y: int,
+    grid_dim_z: int,
+    friction_coefficient: float,  # mu (dimensionless)
+    dt: float,  # Time step (s)
+    gravity_magnitude: float,  # |g| (m/s^2)
+    boundary_padding: int,  # Number of grid cells from boundary where BC applies
+):
+    """
+    Apply GLOBAL plane-strain boundary conditions: v_y = 0 at ALL grid points.
+    
+    For true plane strain, we need eps_yy = 0 everywhere in the domain.
+    This requires v_y = 0 at ALL grid points, not just at boundaries.
+    
+    X and Z boundaries remain free-slip (roller) as usual.
+    
+    This is the correct BC for validating against Kirsch analytical solution
+    which assumes plane strain (tunnel axis direction has zero strain).
+    """
+    grid_x, grid_y, grid_z = wp.tid()
+    v = grid_v_out[grid_x, grid_y, grid_z]
+
+    # GLOBAL plane strain: v_y = 0 everywhere (enforces eps_yy = 0)
+    # This is applied FIRST, before boundary conditions
+    v_y_zeroed = wp.vec3(v[0], 0.0, v[2])
+    grid_v_out[grid_x, grid_y, grid_z] = v_y_zeroed
+    
+    # Re-read after Y zeroing for boundary checks
+    v = grid_v_out[grid_x, grid_y, grid_z]
+
+    # X boundaries: free-slip (roller) - only stop penetrating normal velocity
+    if grid_x <= boundary_padding and v[0] < 0.0:
+        grid_v_out[grid_x, grid_y, grid_z] = wp.vec3(
+            0.0,  # Stop normal velocity
+            0.0,  # Already zero from plane strain
+            apply_coulomb_friction(v[2], friction_coefficient, dt, gravity_magnitude),
+        )
+    if grid_x >= grid_dim_x - boundary_padding and v[0] > 0.0:
+        grid_v_out[grid_x, grid_y, grid_z] = wp.vec3(
+            0.0,  # Stop normal velocity
+            0.0,  # Already zero from plane strain
+            apply_coulomb_friction(v[2], friction_coefficient, dt, gravity_magnitude),
+        )
+
+    # Z boundaries: free-slip (roller) - only stop penetrating normal velocity
+    if grid_z <= boundary_padding and v[2] < 0.0:
+        grid_v_out[grid_x, grid_y, grid_z] = wp.vec3(
+            apply_coulomb_friction(v[0], friction_coefficient, dt, gravity_magnitude),
+            0.0,  # Already zero from plane strain
+            0.0,  # Stop normal velocity
+        )
+    if grid_z >= grid_dim_z - boundary_padding and v[2] > 0.0:
+        grid_v_out[grid_x, grid_y, grid_z] = wp.vec3(
+            apply_coulomb_friction(v[0], friction_coefficient, dt, gravity_magnitude),
+            0.0,  # Already zero from plane strain
             0.0,  # Stop normal velocity
         )
 
@@ -974,9 +1185,9 @@ def collideBoundsRestitution(
     grid_dim_y: int,
     grid_dim_z: int,
     restitution: float,  # Coefficient of restitution (0=inelastic, 1=elastic)
-    friction_coefficient: float,  # μ (dimensionless) for tangential friction
+    friction_coefficient: float,  # mu (dimensionless) for tangential friction
     dt: float,  # Time step (s)
-    gravity_magnitude: float,  # |g| (m/s²)
+    gravity_magnitude: float,  # |g| (m/s^2)
     boundary_padding: int,  # Number of grid cells from boundary where BC applies
 ):
     """
@@ -985,10 +1196,10 @@ def collideBoundsRestitution(
     Args:
         grid_v_out: Grid velocity field
         grid_dim_x/y/z: Grid dimensions
-        restitution: Coefficient of restitution (e ∈ [0,1])
+        restitution: Coefficient of restitution (e in [0,1])
             - e = 0: perfectly inelastic (velocity = 0)
             - e = 1: perfectly elastic (velocity reverses)
-            - e ∈ (0,1): partial energy loss
+            - e in (0,1): partial energy loss
         friction_coefficient: Coulomb friction coefficient for tangential directions
         dt: Time step
         gravity_magnitude: Magnitude of gravity
@@ -996,7 +1207,7 @@ def collideBoundsRestitution(
     
     Physics:
         Normal: v_after = -e * v_before (elastic bounce)
-        Tangential: Coulomb friction applied (Δv = μ·g·dt)
+        Tangential: Coulomb friction applied (delta_v = mu*g*dt)
     """
     grid_x, grid_y, grid_z = wp.tid()
     v = grid_v_out[grid_x, grid_y, grid_z]
@@ -1175,7 +1386,7 @@ def update_C_and_F_from_velocity_change(
     
     Approach:
     - Reconstruct C from grid velocity field (same as G2P)
-    - Update F_trial using velocity gradient (F_new = (I + ∇v·dt) * F_old)
+    - Update F_trial using velocity gradient (F_new = (I + grad_v*dt) * F_old)
     - Only updates MPM particles that received contact impulses
     """
     p = wp.tid()
@@ -1224,7 +1435,7 @@ def update_C_and_F_from_velocity_change(
             # Update C
             particle_C[p] = new_C
             
-            # Update F_trial: F_new = (I + ∇v·dt) * F_old
+            # Update F_trial: F_new = (I + grad_v*dt) * F_old
             I33 = wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
             F_tmp = (I33 + grad_v * dt) * particle_F[p]
             particle_F_trial[p] = F_tmp

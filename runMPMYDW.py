@@ -109,7 +109,7 @@ cfl_limit = dx / c_p
 # Auto-estimate dt from CFL if dt=0
 if args.dt <= 0:
     # CFL safety factor depends nonlinearly on E and nu:
-    # - High nu (→0.5): Near-incompressible, needs much smaller safety factor
+    # - High nu (->0.5): Near-incompressible, needs much smaller safety factor
     # - Low E: Softer materials can have numerical issues, need smaller factor
     # - High E + moderate nu: More stable, can use larger factor
     #
@@ -122,7 +122,7 @@ if args.dt <= 0:
     cfl_safety_factor = 0.1
     
     # Penalty for near-incompressibility (nu approaching 0.5)
-    # As nu → 0.5, bulk modulus → infinity, causing instability
+    # As nu -> 0.5, bulk modulus -> infinity, causing instability
     if nu_mean > 0.45:
         # Exponential penalty for high Poisson ratio
         nu_penalty = np.exp(-10 * (nu_mean - 0.45))  # ~0.6 at nu=0.45, ~0.1 at nu=0.49
@@ -131,9 +131,9 @@ if args.dt <= 0:
     # Penalty for very soft materials (numerical precision issues)
     E_ref = 1e9  # Reference stiffness (typical rock)
     if E_mean < E_ref:
-        # Log-scale penalty: factor of 10 reduction in E → factor of ~2 reduction in safety
+        # Log-scale penalty: factor of 10 reduction in E -> factor of ~2 reduction in safety
         E_ratio = E_mean / E_ref
-        E_penalty = np.clip(E_ratio ** 0.3, 0.1, 1.0)  # E=1e6 → penalty ~0.5, E=1e5 → ~0.25
+        E_penalty = np.clip(E_ratio ** 0.3, 0.1, 1.0)  # E=1e6 -> penalty ~0.5, E=1e5 -> ~0.25
         cfl_safety_factor *= E_penalty
     
     # Combined effect: very soft + near-incompressible is worst case
@@ -142,11 +142,11 @@ if args.dt <= 0:
     
     args.dt = cfl_safety_factor * cfl_limit
     print(f"\n*** AUTO-ESTIMATED dt from CFL ***")
-    print(f"  Material: E={E_mean:.2e} Pa, ν={nu_mean:.3f}")
+    print(f"  Material: E={E_mean:.2e} Pa, nu={nu_mean:.3f}")
     print(f"  CFL limit: {cfl_limit:.2e} s")
     print(f"  Adaptive safety factor: {cfl_safety_factor:.3f}")
     if nu_mean > 0.45:
-        print(f"    (reduced for near-incompressibility: ν={nu_mean:.3f} > 0.45)")
+        print(f"    (reduced for near-incompressibility: nu={nu_mean:.3f} > 0.45)")
     if E_mean < E_ref:
         print(f"    (reduced for soft material: E={E_mean:.2e} < {E_ref:.0e})")
     print(f"  Estimated dt: {args.dt:.2e} s")
@@ -182,7 +182,7 @@ mpm = MPMState(args, sim.nPoints, tuple(gridDims), device=device)
 xpbd = XPBDState(args, sim.nPoints, device=device)
 
 print(f"  Calculated nSteps per big step: {sim.nSteps} (from {args.bigStepDuration}s / {args.dt}s)")
-print(f"  Total simulation time: {sim.bigSteps * args.bigStepDuration}s ({sim.bigSteps} big steps × {args.bigStepDuration}s)")
+print(f"  Total simulation time: {sim.bigSteps * args.bigStepDuration}s ({sim.bigSteps} big steps x {args.bigStepDuration}s)")
 
 # Store domain bounds in sim state as wp.vec3 for kernel use
 sim.minBounds = wp.vec3(minBounds[0], minBounds[1], minBounds[2])
@@ -195,7 +195,7 @@ mpm.boundaryPadding = mpmPadding  # Grid cells from edge where boundary conditio
 # Load from HDF5 if available, otherwise use args/defaults
 if spatial_properties_available.get('density', False):
     density = np.array(h5file["density"], dtype=np.float32)
-    print(f"  Loaded density from HDF5: {density.min():.2e} to {density.max():.2e} kg/m³")
+    print(f"  Loaded density from HDF5: {density.min():.2e} to {density.max():.2e} kg/m^3")
 else:
     density = np.full(sim.nPoints, args.density, dtype=np.float32)
 
@@ -233,13 +233,13 @@ else:
 
 if spatial_properties_available.get('eta_shear', False):
     eta_shear = np.array(h5file["eta_shear"], dtype=np.float32)
-    print(f"  Loaded eta_shear from HDF5: {eta_shear.min():.2e} to {eta_shear.max():.2e} Pa·s")
+    print(f"  Loaded eta_shear from HDF5: {eta_shear.min():.2e} to {eta_shear.max():.2e} Pa*s")
 else:
     eta_shear = np.full(sim.nPoints, args.eta_shear, dtype=np.float32)
 
 if spatial_properties_available.get('eta_bulk', False):
     eta_bulk = np.array(h5file["eta_bulk"], dtype=np.float32)
-    print(f"  Loaded eta_bulk from HDF5: {eta_bulk.min():.2e} to {eta_bulk.max():.2e} Pa·s")
+    print(f"  Loaded eta_bulk from HDF5: {eta_bulk.min():.2e} to {eta_bulk.max():.2e} Pa*s")
 else:
     eta_bulk = np.full(sim.nPoints, args.eta_bulk, dtype=np.float32)
 
@@ -332,14 +332,14 @@ c_p = np.sqrt((K_mean + 4*G_mean/3) / density_mean)
 c_s = np.sqrt(G_mean / density_mean)
 
 # CFL condition: dt < dx / c_max
-# For explicit time integration: dt < C * dx / c_p, where C ≈ 0.1-0.5 for MPM
+# For explicit time integration: dt < C * dx / c_p, where C approx 0.1-0.5 for MPM
 cfl_limit = dx / c_p
 cfl_number = args.dt * c_p / dx
 
 print(f"Material Properties (mean):")
 print(f"  E = {E_mean/1e6:.2f} MPa")
-print(f"  ν = {nu_mean:.3f}")
-print(f"  ρ = {density_mean:.1f} kg/m³")
+print(f"  nu = {nu_mean:.3f}")
+print(f"  rho = {density_mean:.1f} kg/m^3")
 print(f"  K = {K_mean/1e6:.2f} MPa (bulk modulus)")
 print(f"  G = {G_mean/1e6:.2f} MPa (shear modulus)")
 
@@ -367,21 +367,21 @@ print(f"\n  Safety Factor Recommendations:")
 for factor, desc in safety_factors.items():
     recommended_dt = factor * cfl_limit
     if args.dt <= recommended_dt:
-        status = "✅"
+        status = "[OK]"
     else:
-        status = "⚠️"
+        status = "[!]"
     print(f"    {status} C={factor}: dt < {recommended_dt:.2e} s  ({desc})")
 
 if cfl_number < 0.1:
-    print(f"\n  ✅ EXCELLENT: Very stable (CFL = {cfl_number:.3f} << 0.5)")
+    print(f"\n  [OK] EXCELLENT: Very stable (CFL = {cfl_number:.3f} << 0.5)")
 elif cfl_number < 0.3:
-    print(f"\n  ✅ GOOD: Stable for MPM (CFL = {cfl_number:.3f} < 0.5)")
+    print(f"\n  [OK] GOOD: Stable for MPM (CFL = {cfl_number:.3f} < 0.5)")
 elif cfl_number < 0.5:
-    print(f"\n  ⚠️  MARGINAL: Near stability limit (CFL = {cfl_number:.3f})")
+    print(f"\n  [!] MARGINAL: Near stability limit (CFL = {cfl_number:.3f})")
 elif cfl_number < 1.0:
-    print(f"\n  ⚠️  RISKY: May be unstable (CFL = {cfl_number:.3f} > 0.5)")
+    print(f"\n  [!] RISKY: May be unstable (CFL = {cfl_number:.3f} > 0.5)")
 else:
-    print(f"\n  ❌ UNSTABLE: CFL condition violated (CFL = {cfl_number:.3f} > 1.0)!")
+    print(f"\n  [X] UNSTABLE: CFL condition violated (CFL = {cfl_number:.3f} > 1.0)!")
     print(f"     Simulation will likely diverge!")
 
 # Time to traverse one grid cell
@@ -417,12 +417,24 @@ else:
 # automatically include geostatic compression.
 g_mag = np.abs(args.gravity)  # Magnitude of gravity
 if args.initialise_geostatic:
-    wp.launch(
-        kernel=mpmRoutines.initialize_geostatic_F,
-        dim=sim.nPoints,
-        inputs=[sim.particle_x, mpm.particle_F, mpm.mu, mpm.lam, sim.particle_density, g_mag, z_top, mpm.K0],
-        device=device
-    )
+    # Check if using plane strain boundary condition
+    if args.boundaryCondition == "plane_strain_y_global":
+        # Use plane strain initialization: eps_yy = 0, sigma_yy = nu(sigma_xx + sigma_zz)
+        print("  Using PLANE STRAIN geostatic initialization (eps_yy = 0)")
+        wp.launch(
+            kernel=mpmRoutines.initialize_geostatic_F_planestrain,
+            dim=sim.nPoints,
+            inputs=[sim.particle_x, mpm.particle_F, mpm.mu, mpm.lam, sim.particle_density, g_mag, z_top, mpm.K0],
+            device=device
+        )
+    else:
+        # Standard geostatic: sigma_yy = K0 * sigma_v
+        wp.launch(
+            kernel=mpmRoutines.initialize_geostatic_F,
+            dim=sim.nPoints,
+            inputs=[sim.particle_x, mpm.particle_F, mpm.mu, mpm.lam, sim.particle_density, g_mag, z_top, mpm.K0],
+            device=device
+        )
 else:
     # set F to identity
     wp.launch(
@@ -747,8 +759,8 @@ for bigStep in range(restart_bigStep, sim.bigSteps):
             n_sleeping_xpbd = sim.numSleepingXPBD.numpy()[0]
             sleep_pct = (n_sleeping_xpbd / n_total_xpbd * 100) if n_total_xpbd > 0 else 0.0
             
-            print(f'  Step: {counter}, t: {sim.t:.4f}s, Δt_real: +{time.time()-stepStartTime:.4f}s, t_real: {time.time()-startTime:.4f}s')
-            print(f'    residual: {residualCPU:.4e}, mean_damage: {current_mean_damage:.6f} (Δ{damage_change:+.2e})')
+            print(f'  Step: {counter}, t: {sim.t:.4f}s, dt_real: +{time.time()-stepStartTime:.4f}s, t_real: {time.time()-startTime:.4f}s')
+            print(f'    residual: {residualCPU:.4e}, mean_damage: {current_mean_damage:.6f} (d={damage_change:+.2e})')
             print(f'    particles: {n_total} total | MPM: {n_active_mpm}+{n_inactive_mpm} (active+inactive) | XPBD: {n_total_xpbd} ({n_sleeping_xpbd} sleeping, {sleep_pct:.1f}%)')
 
         # Render/save if needed
@@ -818,7 +830,7 @@ for bigStep in range(restart_bigStep, sim.bigSteps):
                 n_sleeping_xpbd = sim.numSleepingXPBD.numpy()[0]
                 sleep_pct = (n_sleeping_xpbd / n_total_xpbd * 100) if n_total_xpbd > 0 else 0.0
                 
-                print(f'    XPBD Step: {xpbd_counter}/{sim.xpbdOnlySteps}, t: {sim.t:.4f}s, Δt_real: +{time.time()-stepStartTime:.4f}s, t_real: {time.time()-startTime:.4f}s')
+                print(f'    XPBD Step: {xpbd_counter}/{sim.xpbdOnlySteps}, t: {sim.t:.4f}s, dt_real: +{time.time()-stepStartTime:.4f}s, t_real: {time.time()-startTime:.4f}s')
                 print(f'      particles: {n_total} total | MPM: {n_active_mpm}+{n_inactive_mpm} | XPBD: {n_total_xpbd} ({n_sleeping_xpbd} sleeping, {sleep_pct:.1f}%)')
             
             nextRenderTime, maxStress = check_render_save(
